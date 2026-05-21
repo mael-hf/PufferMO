@@ -1002,3 +1002,66 @@ class G2048(nn.Module):
         logits = self.decoder(hidden)
         values = self.value(hidden)
         return logits, values
+
+
+
+class ResourceGathering(nn.Module):
+    def __init__(self, env, hidden_size=128,
+                 q_value_critic=False, weight_conditioning=False, **kwargs):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.multiobjective_reward = hasattr(env, 'reward_dim')
+        self.weight_conditioning = weight_conditioning
+        self.q_value_critic = q_value_critic
+        self.reward_dim = env.reward_dim if self.multiobjective_reward else 1
+
+        self.is_continuous = False
+
+        # Observation: 4 ints (row, col, has_gold, has_gem)
+        obs_size = int(np.prod(env.single_observation_space.shape))
+        input_size = obs_size
+        if self.weight_conditioning:
+            input_size += self.reward_dim
+
+        self.encoder = torch.nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(input_size, hidden_size)),
+            nn.GELU(),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size)),
+            nn.GELU(),
+        )
+
+        self.num_atns = env.single_action_space.n
+        self.decoder = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, self.num_atns), std=0.01)
+
+        if self.q_value_critic:
+            value_fn_output_size = self.reward_dim * self.num_atns
+        else:
+            value_fn_output_size = self.reward_dim
+
+        self.value = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, value_fn_output_size), std=1)
+
+    def forward(self, observations, state=None):
+        hidden = self.encode_observations(observations, state)
+        actions, value = self.decode_actions(hidden)
+        return actions, value
+
+    def forward_train(self, x, state=None):
+        return self.forward(x, state)
+
+    def encode_observations(self, observations, state=None):
+        observations = observations.float()
+        if self.weight_conditioning and state is not None and 'weight' in state:
+            weight_features = state['weight'].float()
+            observations = torch.cat([observations, weight_features], dim=1)
+        return self.encoder(observations)
+
+    def decode_actions(self, hidden):
+        action = self.decoder(hidden)
+        value = self.value(hidden)
+        if self.q_value_critic and self.multiobjective_reward:
+            value = value.view(-1, self.reward_dim, self.num_atns)
+        elif self.q_value_critic:
+            value = value.view(-1, self.num_atns)
+        return action, value

@@ -38,7 +38,6 @@ int main(void) {
         c_render(&env);
     }
 
-    /* ── Libération mémoire ── */
     free(env.observations);
     free(env.actions);
     free(env.rewards);

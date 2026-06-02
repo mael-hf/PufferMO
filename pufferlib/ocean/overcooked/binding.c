@@ -1,35 +1,36 @@
 #include "overcooked.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+#define Env Overcooked
 #include "../env_binding.h"
 
-void my_init(Overcooked* env) {
-    // 1. Initialisation par défaut basée sur l'officiel
-    env->layout_id = LAYOUT_CRAMPED_ROOM; // Changeable via Python si besoin
-    env->num_agents = NUM_AGENTS;
-    env->observation_size = 43; // La taille exacte du vecteur d'obs
-    env->max_ticks = 400; // Horizon de 400 imposé par l'article de recherche
-    
-    // Reward shaping officiel
-    env->rewards_config.dish_served_whole_team = 20.0f; // 20 points pour la soupe servie
-    env->rewards_config.dish_served_agent = 0.0f;
-    env->rewards_config.pot_started = 0.15f;
-    env->rewards_config.ingredient_added = 0.15f;
-    env->rewards_config.ingredient_picked = 0.05f;
-    env->rewards_config.plate_picked = 0.05f;
-    env->rewards_config.soup_plated = 0.20f;
-    env->rewards_config.wrong_dish_served = 0.0f;
-    env->rewards_config.step_penalty = 0.0f;
+static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
+    // 1. Valeurs par défaut au cas où
+    env->layout_id = 0;
+    env->num_agents = 2;
+    env->grid_size = 32;
+    env->max_ticks = 400;
 
-    // 2. Initialisation de la mémoire statique de l'environnement
+    // 2. PufferLib force 5 arguments positionnels dans 'args'
+    // args[0] = self (l'objet Python)
+    // args[1] = layout
+    // args[2] = num_agents
+    // args[3] = grid_size
+    // args[4] = max_ticks
+    if (args != NULL && PyTuple_Size(args) >= 5) {
+        env->layout_id = (LayoutType)PyLong_AsLong(PyTuple_GetItem(args, 1));
+        env->num_agents = (int)PyLong_AsLong(PyTuple_GetItem(args, 2));
+        env->grid_size = (int)PyLong_AsLong(PyTuple_GetItem(args, 3));
+        env->max_ticks = (int)PyLong_AsLong(PyTuple_GetItem(args, 4));
+    } 
+
+    // 3. Initialisation du moteur de jeu
     init(env);
-    
-    // PufferLib allouera observations, actions, rewards, terminals, log 
-    // automatiquement.
+    return 0;
 }
 
-void my_log(Overcooked* env, Log* log) {
-    // Mapping direct (pas de multi-objectif)
-    log->episode_return = env->log.episode_return;
-    log->dishes_served = env->log.dishes_served;
-    log->correct_dishes = env->log.correct_dishes;
-    log->agent_collisions = env->log.agent_collisions;
+// Fonction log obligatoire pour la compilation PufferLib
+static int my_log(PyObject* dict, Log* log) {
+    return 0;
 }

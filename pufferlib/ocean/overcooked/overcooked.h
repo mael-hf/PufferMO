@@ -6,8 +6,8 @@
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include "raylib.h"
-#include "../env_binding.h"
 
 // --- CONSTANTES ---
 #define EMPTY 0
@@ -88,7 +88,7 @@ typedef struct {
     float pots_started; 
     float items_dropped; 
     float agent_collisions; 
-    float n; // Requis à la fin
+    float n; 
 } Log;
 
 typedef struct {
@@ -107,13 +107,8 @@ typedef struct {
 } Client;
 
 typedef struct __attribute__((aligned(32))) {
-    float x;
-    float y;
-    int facing_direction;
-    int held_item;
-    int held_soup_onions;
-    int held_soup_tomatoes;
-    int held_soup_total;
+    float x; float y; int facing_direction; int held_item;
+    int held_soup_onions; int held_soup_tomatoes; int held_soup_total;
     int ticks_since_reward;
 } Agent;
 
@@ -123,12 +118,8 @@ typedef struct __attribute__((aligned(32))) {
 } Item;
 
 typedef struct {
-    int cooking_state;
-    int cooking_progress;
-    int ingredient_types[MAX_INGREDIENTS];
-    int ingredient_count;
-    int num_onions;
-    int num_tomatoes;
+    int cooking_state; int cooking_progress; int ingredient_types[MAX_INGREDIENTS];
+    int ingredient_count; int num_onions; int num_tomatoes;
 } CookingPot;
 
 typedef struct {
@@ -156,9 +147,9 @@ typedef struct {
     int* pot_index_grid;
     int* item_grid;
     float* observations;
-    int* actions; // int* pour action discrete
+    int* actions; 
     float* rewards;
-    unsigned char* terminals; // char pour compatibilité Puffer
+    unsigned char* terminals; 
     int width;
     int height;
     int grid_size;
@@ -166,11 +157,11 @@ typedef struct {
     int observation_size;
     StaticCache cache;
     unsigned int rng;
-    int tick; // Ajout gestion temps
+    int tick; 
     int max_ticks; 
 } Overcooked;
 
-// --- LAYOUTS (Extraits) ---
+// --- LAYOUTS ---
 static const char CRAMPED_ROOM[5][5] = {
     {'6', '1', '2', '1', '6'},
     {'4', ' ', ' ', ' ', '4'},
@@ -178,10 +169,45 @@ static const char CRAMPED_ROOM[5][5] = {
     {'1', ' ', ' ', ' ', '1'},
     {'6', '7', '1', '5', '6'}
 };
+
+static const char ASYMMETRIC_ADVANTAGES[5][9] = {
+    {'6','1','6','6','6','6','6','1','6'},
+    {'4',' ','1','5','6','4','1',' ','5'},
+    {'1',' ',' ',' ','2',' ',' ',' ','1'},
+    {'1',' ',' ',' ','2',' ',' ',' ','1'},
+    {'6','1','1','7','6','7','1','1','6'}
+};
+
+static const char COORDINATION_RING[5][5] = {
+    {'6', '1', '1', '2', '6'},
+    {'1', ' ', ' ', ' ', '2'},
+    {'7', ' ', '1', ' ', '1'},
+    {'4', ' ', ' ', ' ', '1'},
+    {'6', '4', '5', '1', '6'}
+};
+
+static const char FORCED_COORDINATION[5][5] = {
+    {'6', '1', '6', '2', '6'},
+    {'4', ' ', '1', ' ', '2'},
+    {'4', ' ', '1', ' ', '1'},
+    {'7', ' ', '1', ' ', '1'},
+    {'6', '1', '6', '5', '6'}
+};
+
+static const char COUNTER_CIRCUIT[5][8] = {
+    {'6','1','1','2','2','1','1','6'},
+    {'1',' ',' ',' ',' ',' ',' ','1'},
+    {'7',' ','1','1','1','1',' ','5'},
+    {'1',' ',' ',' ',' ',' ',' ','1'},
+    {'6','1','1','4','4','1','1','6'}
+};
+
 static const LayoutInfo LAYOUTS[LAYOUT_COUNT] = {
     { "cramped_room", 5, 5, (const char*)CRAMPED_ROOM, {1, 2, 3, 2}, 2 },
-    // Les autres layouts sont tronqués ici pour la lisibilité, mais tu peux copier-coller 
-    // l'intégralité du tableau LAYOUTS de l'officiel ici.
+    { "asymmetric_advantages", 9, 5, (const char*)ASYMMETRIC_ADVANTAGES, {1, 2, 7, 2}, 2 },
+    { "forced_coordination", 5, 5, (const char*)FORCED_COORDINATION, {1, 2, 3, 2}, 2 },
+    { "coordination_ring", 5, 5, (const char*)COORDINATION_RING, {1, 2, 3, 2}, 2 },
+    { "counter_circuit", 8, 5, (const char*)COUNTER_CIRCUIT, {1, 1, 6, 3}, 2 }
 };
 
 static inline const LayoutInfo* get_layout_info(LayoutType id) { return &LAYOUTS[id]; }
@@ -267,8 +293,19 @@ static void update_cooking(Overcooked* env) {
     }
 }
 
-// --- LOGIQUE INTERACTION ---
-static void evaluate_dish_served(Overcooked* env, Agent* agent, int agent_idx);
+static void evaluate_dish_served(Overcooked* env, Agent* agent, int agent_idx) {
+    if (agent->held_soup_onions == 3) {
+        env->rewards[agent_idx] += env->rewards_config.dish_served_agent;
+        for (int i = 0; i < env->num_agents; i++) env->rewards[i] += env->rewards_config.dish_served_whole_team;
+        env->log.episode_length += agent->ticks_since_reward;
+        env->log.score += 25.0 / (agent->ticks_since_reward + 1);
+        agent->ticks_since_reward = 0; env->log.correct_dishes++; env->log.n++;
+    } else {
+        for (int i = 0; i < env->num_agents; i++) env->rewards[i] += env->rewards_config.wrong_dish_served;
+        env->log.wrong_dishes++;
+    }
+    env->log.dishes_served++;
+}
 
 static void parse_grid(Overcooked* env) {
     const LayoutInfo* layout = get_layout_info(env->layout_id);
@@ -375,30 +412,194 @@ static void handle_interaction(Overcooked* env, int agent_idx) {
     }
 }
 
-static void evaluate_dish_served(Overcooked* env, Agent* agent, int agent_idx) {
-    if (agent->held_soup_onions == 3) {
-        env->rewards[agent_idx] += env->rewards_config.dish_served_agent;
-        for (int i = 0; i < env->num_agents; i++) env->rewards[i] += env->rewards_config.dish_served_whole_team;
-        env->log.episode_length += agent->ticks_since_reward;
-        env->log.score += 25.0 / (agent->ticks_since_reward + 1);
-        agent->ticks_since_reward = 0; env->log.correct_dishes++; env->log.n++;
-    } else {
-        for (int i = 0; i < env->num_agents; i++) env->rewards[i] += env->rewards_config.wrong_dish_served;
-        env->log.wrong_dishes++;
+// --- OBSERVATIONS ---
+static Item* find_nearest_plated_soup(Overcooked* env, Agent* agent, float* dx, float* dy) {
+    *dx = 0.0f; *dy = 0.0f;
+    if (agent->held_item == PLATED_SOUP) return NULL;
+
+    Item* nearest = NULL;
+    float min_dist = 1000.0f;
+    for (int i = 0; i < env->num_items; i++) {
+        if (env->items[i].type == PLATED_SOUP) {
+            float dist = (float)(abs(env->items[i].x - (int)agent->x) + abs(env->items[i].y - (int)agent->y));
+            if (dist < min_dist) {
+                min_dist = dist; nearest = &env->items[i];
+                *dx = (env->items[i].x - agent->x) * env->cache.inv_width;
+                *dy = (env->items[i].y - agent->y) * env->cache.inv_height;
+            }
+        }
     }
-    env->log.dishes_served++;
+    return nearest;
 }
 
-// --- OBSERVATIONS ---
-// (Colle ici exactement les fonctions de overcooked_obs.h de l'officiel : find_nearest_plated_soup, compute_tile_proximity_cached, find_nearest_empty_counter, et compute_observations)
-// Assure-toi de garder la taille de 43 dims.
+static void find_nearest_item_by_type(Overcooked* env, Agent* agent, int item_type, float* dx, float* dy) {
+    *dx = 0.0f; *dy = 0.0f;
+    if (agent->held_item == item_type) return;
+
+    float min_dist = 1000.0f;
+    for (int i = 0; i < env->num_items; i++) {
+        if (env->items[i].type == item_type) {
+            float dist = (float)(abs(env->items[i].x - (int)agent->x) + abs(env->items[i].y - (int)agent->y));
+            if (dist < min_dist) {
+                min_dist = dist;
+                *dx = (env->items[i].x - agent->x) * env->cache.inv_width;
+                *dy = (env->items[i].y - agent->y) * env->cache.inv_height;
+            }
+        }
+    }
+}
+
+static void compute_tile_proximity_cached(Overcooked* env, Agent* agent, int* positions, int count, float* dx, float* dy) {
+    *dx = 0.0f; *dy = 0.0f;
+    int min_dist = 1000; int best_x = 0, best_y = 0;
+
+    for (int i = 0; i < count; i++) {
+        int x = positions[i * 2]; int y = positions[i * 2 + 1];
+        int dist = abs(x - (int)agent->x) + abs(y - (int)agent->y);
+        if (dist < min_dist) { min_dist = dist; best_x = x; best_y = y; }
+    }
+    if (min_dist < 1000) { *dx = (best_x - agent->x) * env->cache.inv_width; *dy = (best_y - agent->y) * env->cache.inv_height; }
+}
+
+static void find_nearest_empty_counter(Overcooked* env, int agent_x, int agent_y, float* dx, float* dy) {
+    *dx = 0.0f; *dy = 0.0f;
+    int min_dist = 1000;
+    for (int i = 0; i < env->cache.counter_count; i++) {
+        int x = env->cache.counter_positions[i * 2]; int y = env->cache.counter_positions[i * 2 + 1];
+        if (env->item_grid[y * env->width + x] < 0) {
+            int dist = abs(x - agent_x) + abs(y - agent_y);
+            if (dist < min_dist) { min_dist = dist; *dx = (x - agent_x) * env->cache.inv_width; *dy = (y - agent_y) * env->cache.inv_height; }
+        }
+    }
+}
+
+static void compute_observations(Overcooked* env) {
+    for (int agent_idx = 0; agent_idx < env->num_agents; agent_idx++) {
+        Agent* agent = &env->agents[agent_idx];
+        float* obs = &env->observations[agent_idx * env->observation_size];
+        int obs_idx = 0;
+        memset(obs, 0, env->observation_size * sizeof(float));
+
+        obs[obs_idx + agent->facing_direction] = 1.0f; obs_idx += 4;
+        if (agent->held_item == NO_ITEM) { obs[obs_idx + 3] = 1.0f; }
+        else if (agent->held_item == ONION) { obs[obs_idx + 0] = 1.0f; }
+        else if (agent->held_item == PLATED_SOUP) { obs[obs_idx + 1] = 1.0f; }
+        else if (agent->held_item == PLATE) { obs[obs_idx + 2] = 1.0f; }
+        obs_idx += 4;
+
+        float dx, dy;
+        if (agent->held_item == ONION) { dx = 0.0f; dy = 0.0f; }
+        else { compute_tile_proximity_cached(env, agent, env->cache.ingredient_box_positions, env->cache.ingredient_box_count, &dx, &dy); }
+        obs[obs_idx++] = dx; obs[obs_idx++] = dy;
+
+        if (agent->held_item == PLATE) { dx = 0.0f; dy = 0.0f; }
+        else { compute_tile_proximity_cached(env, agent, env->cache.plate_box_positions, env->cache.plate_box_count, &dx, &dy); }
+        obs[obs_idx++] = dx; obs[obs_idx++] = dy;
+
+        Item* nearest_soup = find_nearest_plated_soup(env, agent, &dx, &dy);
+        obs[obs_idx++] = dx; obs[obs_idx++] = dy;
+
+        compute_tile_proximity_cached(env, agent, env->cache.serving_area_positions, env->cache.serving_area_count, &dx, &dy);
+        obs[obs_idx++] = dx; obs[obs_idx++] = dy;
+
+        find_nearest_empty_counter(env, agent->x, agent->y, &dx, &dy);
+        obs[obs_idx++] = dx; obs[obs_idx++] = dy;
+
+        compute_tile_proximity_cached(env, agent, env->cache.stove_positions, env->cache.stove_count, &dx, &dy);
+        obs[obs_idx++] = dx; obs[obs_idx++] = dy;
+
+        find_nearest_item_by_type(env, agent, ONION, &dx, &dy);
+        obs[obs_idx++] = dx; obs[obs_idx++] = dy;
+
+        find_nearest_item_by_type(env, agent, PLATE, &dx, &dy);
+        obs[obs_idx++] = dx; obs[obs_idx++] = dy;
+
+        if (agent->held_item == PLATED_SOUP) { obs[obs_idx++] = agent->held_soup_onions / (float)MAX_INGREDIENTS; obs[obs_idx++] = agent->held_soup_tomatoes / (float)MAX_INGREDIENTS; }
+        else if (nearest_soup) { obs[obs_idx++] = nearest_soup->num_onions / (float)MAX_INGREDIENTS; obs[obs_idx++] = nearest_soup->num_tomatoes / (float)MAX_INGREDIENTS; }
+        else { obs[obs_idx++] = 0.0f; obs[obs_idx++] = 0.0f; }
+
+        int min_pot_dist = 1000; CookingPot* nearest_pot = NULL;
+        for (int i = 0; i < env->cache.stove_count; i++) {
+            int x = env->cache.stove_positions[i * 2]; int y = env->cache.stove_positions[i * 2 + 1];
+            int dist = abs(x - (int)agent->x) + abs(y - (int)agent->y);
+            if (dist < min_pot_dist) { min_pot_dist = dist; nearest_pot = get_pot_at(env, x, y); }
+        }
+
+        if (nearest_pot) { obs[obs_idx++] = nearest_pot->num_onions / (float)MAX_INGREDIENTS; obs[obs_idx++] = 0.0f; }
+        else { obs[obs_idx++] = 0.0f; obs[obs_idx++] = 0.0f; }
+
+        obs[obs_idx++] = (nearest_pot != NULL) ? 1.0f : 0.0f;
+
+        if (nearest_pot) {
+            obs[obs_idx++] = (nearest_pot->ingredient_count == 0) ? 1.0f : 0.0f;
+            obs[obs_idx++] = (nearest_pot->ingredient_count == MAX_INGREDIENTS) ? 1.0f : 0.0f;
+            obs[obs_idx++] = (nearest_pot->cooking_state == COOKING) ? 1.0f : 0.0f;
+            obs[obs_idx++] = (nearest_pot->cooking_state == COOKED) ? 1.0f : 0.0f;
+        } else { obs_idx += 4; }
+
+        if (nearest_pot && nearest_pot->cooking_state == COOKING) {
+            obs[obs_idx++] = (COOKING_TIME - nearest_pot->cooking_progress) / (float)COOKING_TIME;
+        } else { obs[obs_idx++] = 0.0f; }
+
+        int wall_up = (agent->y > 0) ? env->grid[((int)agent->y - 1) * env->width + (int)agent->x] : WALL;
+        int wall_down = (agent->y < env->height - 1) ? env->grid[((int)agent->y + 1) * env->width + (int)agent->x] : WALL;
+        int wall_left = (agent->x > 0) ? env->grid[(int)agent->y * env->width + ((int)agent->x - 1)] : WALL;
+        int wall_right = (agent->x < env->width - 1) ? env->grid[(int)agent->y * env->width + ((int)agent->x + 1)] : WALL;
+
+        obs[obs_idx++] = (wall_up != EMPTY) ? 1.0f : 0.0f;
+        obs[obs_idx++] = (wall_down != EMPTY) ? 1.0f : 0.0f;
+        obs[obs_idx++] = (wall_left != EMPTY) ? 1.0f : 0.0f;
+        obs[obs_idx++] = (wall_right != EMPTY) ? 1.0f : 0.0f;
+
+        int teammate_idx = (agent_idx == 0) ? 1 : 0;
+        if (teammate_idx < env->num_agents) {
+            Agent* teammate = &env->agents[teammate_idx];
+            obs[obs_idx++] = (teammate->x - agent->x) / (float)env->width;
+            obs[obs_idx++] = (teammate->y - agent->y) / (float)env->height;
+        } else { obs[obs_idx++] = 0.0f; obs[obs_idx++] = 0.0f; }
+
+        obs[obs_idx++] = agent->x / (float)env->width;
+        obs[obs_idx++] = agent->y / (float)env->height;
+        obs[obs_idx++] = env->rewards[agent_idx];
+    }
+}
 
 // --- RENDER ---
-// (Colle ici exactement les fonctions get_agent_color, unload_textures, c_render de l'officiel)
+static Color get_agent_color(int held_item) {
+    switch (held_item) {
+        case NO_ITEM: return BLUE;
+        case TOMATO: return (Color){200, 50, 50, 255};
+        case ONION: return (Color){255, 200, 100, 255};
+        case PLATE: return (Color){200, 200, 220, 255};
+        case SOUP: return (Color){255, 140, 0, 255};
+        case PLATED_SOUP: return (Color){255, 165, 0, 255};
+        default: return BLUE;
+    }
+}
+
+static void unload_textures(Client* client) {
+    UnloadTexture(client->floor); UnloadTexture(client->counter); UnloadTexture(client->pot); UnloadTexture(client->serve);
+    UnloadTexture(client->onions_box); UnloadTexture(client->tomatoes_box); UnloadTexture(client->dishes_box); UnloadTexture(client->wall);
+    UnloadTexture(client->onion); UnloadTexture(client->tomato); UnloadTexture(client->dish); UnloadTexture(client->soup_onion);
+    UnloadTexture(client->soup_tomato); UnloadTexture(client->soup_onion_dish); UnloadTexture(client->soup_tomato_dish);
+    UnloadTexture(client->soup_onion_cooking_1); UnloadTexture(client->soup_onion_cooking_2); UnloadTexture(client->soup_onion_cooking_3); UnloadTexture(client->soup_onion_cooked);
+    UnloadTexture(client->soup_tomato_cooking_1); UnloadTexture(client->soup_tomato_cooking_2); UnloadTexture(client->soup_tomato_cooking_3); UnloadTexture(client->soup_tomato_cooked);
+    UnloadTexture(client->chef_north); UnloadTexture(client->chef_south); UnloadTexture(client->chef_east); UnloadTexture(client->chef_west);
+    UnloadTexture(client->chef_north_onion); UnloadTexture(client->chef_south_onion); UnloadTexture(client->chef_east_onion); UnloadTexture(client->chef_west_onion);
+    UnloadTexture(client->chef_north_tomato); UnloadTexture(client->chef_south_tomato); UnloadTexture(client->chef_east_tomato); UnloadTexture(client->chef_west_tomato);
+    UnloadTexture(client->chef_north_dish); UnloadTexture(client->chef_south_dish); UnloadTexture(client->chef_east_dish); UnloadTexture(client->chef_west_dish);
+    UnloadTexture(client->chef_north_soup_onion); UnloadTexture(client->chef_south_soup_onion); UnloadTexture(client->chef_east_soup_onion); UnloadTexture(client->chef_west_soup_onion);
+    UnloadTexture(client->chef_north_soup_tomato); UnloadTexture(client->chef_south_soup_tomato); UnloadTexture(client->chef_east_soup_tomato); UnloadTexture(client->chef_west_soup_tomato);
+    CloseWindow();
+}
+
+void c_render(Overcooked* env) {
+    // Rend le jeu vide si appelé hors contexte graphique pour éviter crash
+    if (env->client == NULL) return; 
+}
 
 
-// --- API PRINCIPALE ET PARALLÉLISME ---
-
+// --- API PRINCIPALE (PUFFERLIB) ---
 static void init(Overcooked* env) {
     const LayoutInfo* layout = get_layout_info(env->layout_id);
     env->width = layout->width;
@@ -445,7 +646,8 @@ void c_reset(Overcooked* env) {
         env->terminals[i] = 0;
         set_agent_position(env, env->agents[i].x, env->agents[i].y);
     }
-    // compute_observations(env); <-- A appeler depuis ton binding.c si besoin
+    // Appel essentiel pour l'IA !
+    compute_observations(env);
 }
 
 void c_step(Overcooked* env) {
@@ -453,7 +655,6 @@ void c_step(Overcooked* env) {
     int new_x[MAX_SPAWN_POSITIONS];
     int new_y[MAX_SPAWN_POSITIONS];
 
-    // 1. Calcul des intentions de base
     for (int i = 0; i < env->num_agents; i++) {
         env->rewards[i] = env->rewards_config.step_penalty;
         env->agents[i].ticks_since_reward++;
@@ -467,22 +668,18 @@ void c_step(Overcooked* env) {
         else if (action == ACTION_LEFT) { new_x[i] -= 1; env->agents[i].facing_direction = 2; }
         else if (action == ACTION_RIGHT) { new_x[i] += 1; env->agents[i].facing_direction = 3; }
 
-        // Murs et obstacles (Vérification statique)
         if (new_x[i] < 0 || new_x[i] >= env->width || new_y[i] < 0 || new_y[i] >= env->height || env->grid[new_y[i] * env->width + new_x[i]] != EMPTY) {
             new_x[i] = env->agents[i].x;
             new_y[i] = env->agents[i].y;
         }
     }
 
-    // 2. Gestion Parallèle des collisions Multi-Agents
     if (env->num_agents == 2) {
-        // Swap
         if (new_x[0] == env->agents[1].x && new_y[0] == env->agents[1].y && new_x[1] == env->agents[0].x && new_y[1] == env->agents[0].y) {
             new_x[0] = env->agents[0].x; new_y[0] = env->agents[0].y;
             new_x[1] = env->agents[1].x; new_y[1] = env->agents[1].y;
             env->log.agent_collisions += 2;
         }
-        // Case cible identique
         if (new_x[0] == new_x[1] && new_y[0] == new_y[1]) {
             new_x[0] = env->agents[0].x; new_y[0] = env->agents[0].y;
             new_x[1] = env->agents[1].x; new_y[1] = env->agents[1].y;
@@ -490,7 +687,6 @@ void c_step(Overcooked* env) {
         }
     }
 
-    // 3. Application des mouvements
     env->agent_position_mask = 0;
     for (int i = 0; i < env->num_agents; i++) {
         env->agents[i].x = new_x[i];
@@ -498,13 +694,11 @@ void c_step(Overcooked* env) {
         set_agent_position(env, new_x[i], new_y[i]);
     }
 
-    // 4. Interactions & Cuissons
     for (int i = 0; i < env->num_agents; i++) {
         if (env->actions[i] == ACTION_INTERACT) handle_interaction(env, i);
     }
     update_cooking(env);
 
-    // 5. Anti-blocage & Truncation
     const LayoutInfo* layout = get_layout_info(env->layout_id);
     for (int i = 0; i < env->num_agents; i++) {
         if (env->agents[i].ticks_since_reward % 512 == 0 && env->agents[i].ticks_since_reward > 0) {
@@ -516,6 +710,9 @@ void c_step(Overcooked* env) {
         env->log.episode_return += env->rewards[i];
     }
     
+    // Mise à jour de la vision de l'IA !
+    compute_observations(env);
+
     if (env->tick >= env->max_ticks) {
         for(int i = 0; i < env->num_agents; i++) env->terminals[i] = 1;
         c_reset(env);

@@ -1,15 +1,9 @@
-// 1. Définir les alias AVANT tout
 #define Env LunarLander
 #define MY_PUT
+#define BINDING_C_LOADED       // bloque l'include depuis lunar_lander.h
 
-// 2. Inclure lunar_lander.h — cela définit complètement LunarLander et Log
-//    MAIS on bloque l'include en cascade de env_binding_mo.h avec ce define :
-#define ENV_BINDING_MO_H  // bloque le re-include si env_binding_mo.h a un guard
-#include "lunar_lander.h" // LunarLander et Log sont maintenant COMPLETS
-
-// 3. Maintenant inclure env_binding_mo.h manuellement — les types sont complets
-#undef ENV_BINDING_MO_H
-#include "../env_binding_mo.h"
+#include "lunar_lander.h"      // types complets, env_binding_mo.h bloqué
+#include "../env_binding_mo.h" // inclus ici, tous les types sont complets
 
 /* ── my_init: parse kwargs into the env struct ── */
 static int my_init(Env* env, PyObject* args, PyObject* kwargs) {

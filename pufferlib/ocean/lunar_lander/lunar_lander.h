@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "raylib.h"
-#include "../env_binding_mo.h"
 
 /* ── Couleurs PufferLib ── */
 const Color PUFF_RED        = (Color){187,   0,   0, 255};
@@ -538,3 +537,7 @@ void c_close(LunarLander* env) {
         CloseWindow();
     }
 }
+
+#ifndef BINDING_C_LOADED
+#include "../env_binding_mo.h"
+#endif

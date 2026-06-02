@@ -1,17 +1,15 @@
-
-// 2. Définir les alias AVANT tout include qui déclenche env_binding_mo.h
+// 1. Définir les alias AVANT tout
 #define Env LunarLander
 #define MY_PUT
 
-// 3. Déclarer Log et LunarLander en forward AVANT l'include de lunar_lander.h
-//    → satisfait les déclarations forward de env_binding_mo.h lors de son
-//      premier include (déclenché par lunar_lander.h ligne 7)
-typedef struct LunarLander LunarLander;
-typedef struct Log Log;
+// 2. Inclure lunar_lander.h — cela définit complètement LunarLander et Log
+//    MAIS on bloque l'include en cascade de env_binding_mo.h avec ce define :
+#define ENV_BINDING_MO_H  // bloque le re-include si env_binding_mo.h a un guard
+#include "lunar_lander.h" // LunarLander et Log sont maintenant COMPLETS
 
-// 4. Maintenant inclure lunar_lander.h (qui inclut env_binding_mo.h en cascade)
-//    Les types sont déjà connus grâce aux forward declarations ci-dessus
-#include "lunar_lander.h"
+// 3. Maintenant inclure env_binding_mo.h manuellement — les types sont complets
+#undef ENV_BINDING_MO_H
+#include "../env_binding_mo.h"
 
 /* ── my_init: parse kwargs into the env struct ── */
 static int my_init(Env* env, PyObject* args, PyObject* kwargs) {

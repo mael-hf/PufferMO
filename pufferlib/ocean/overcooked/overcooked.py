@@ -41,6 +41,10 @@ class OvercookedEnv(pufferlib.PufferEnv):
         self.actions[:] = actions
         self.c_bindings.env_step(self.c_env)
         return self.observations, self.rewards, self.terminals, self.truncations, {}
+    
+    def close(self):
+        self.c_bindings.env_close(self.c_env)
 
 def env(**kwargs):
     return OvercookedEnv(**kwargs)
+

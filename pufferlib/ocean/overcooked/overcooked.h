@@ -601,6 +601,8 @@ void c_render(Overcooked* env) {
 
 // --- API PRINCIPALE (PUFFERLIB) ---
 static void init(Overcooked* env) {
+    env->tick = 0;
+
     const LayoutInfo* layout = get_layout_info(env->layout_id);
     env->width = layout->width;
     env->height = layout->height;
@@ -672,6 +674,24 @@ void c_step(Overcooked* env) {
             new_x[i] = env->agents[i].x;
             new_y[i] = env->agents[i].y;
         }
+        
+        const LayoutInfo* layout = get_layout_info(env->layout_id);
+        for (int i = 0; i < env->num_agents; i++) {
+            if (env->agents[i].ticks_since_reward % 512 == 0 && env->agents[i].ticks_since_reward > 0) {
+                clear_agent_position(env, env->agents[i].x, env->agents[i].y);
+                env->agents[i].x = layout->spawn_positions[i * 2]; env->agents[i].y = layout->spawn_positions[i * 2 + 1];
+                set_agent_position(env, env->agents[i].x, env->agents[i].y);
+                env->agents[i].held_item = NO_ITEM;
+            }
+            env->log.episode_return += env->rewards[i];
+        }
+
+
+        if (env->tick >= env->max_ticks) {
+            for (int i = 0; i < env->num_agents; i++) {
+                env->terminals[i] = 1; // PufferLib va voir ça et faire le reset !
+            }
+        }
     }
 
     if (env->num_agents == 2) {
@@ -715,7 +735,6 @@ void c_step(Overcooked* env) {
 
     if (env->tick >= env->max_ticks) {
         for(int i = 0; i < env->num_agents; i++) env->terminals[i] = 1;
-        c_reset(env);
     }
 }
 

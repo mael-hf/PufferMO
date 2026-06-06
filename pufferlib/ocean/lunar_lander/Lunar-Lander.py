@@ -113,7 +113,7 @@ class LunarLander(pufferlib.PufferEnv):
 if __name__ == "__main__":
     import time
 
-    N    = 4096
+    N    = 64
     env  = LunarLander(num_envs=N)
     env.reset()
     steps = 0
@@ -127,5 +127,5 @@ if __name__ == "__main__":
         steps += 1
 
     sps = int(env.num_agents * steps / (time.time() - start))
-    print(f"Squared SPS: {sps}")
+    print(f"SPS: {sps}")
     env.close()

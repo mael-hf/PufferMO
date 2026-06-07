@@ -31,7 +31,7 @@ Observations (8-dim):
 import numpy as np
 import gymnasium as gym
 
-from pufferlib.ocean.lunar_lander.lunar_lander import LunarLander
+from pufferlib.ocean.lunar_lander.Lunar_Lander import LunarLander
 
 # Absolute tolerance for reward comparison
 # (float32 vs float64 arithmetic can introduce small differences)

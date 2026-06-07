@@ -99,7 +99,7 @@ class LunarLander(pufferlib.PufferEnv):
         if weights.ndim == 1:
             weights = np.broadcast_to(weights, (self.num_agents, REWARD_DIM)).copy()
         self.weights[:] = weights
-        binding.vec_put(self.c_envs, weights)
+        binding.vec_put(self.c_envs)
 
     # ------------------------------------------------------------------
     def render(self):

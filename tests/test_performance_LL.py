@@ -2,7 +2,7 @@ from pufferlib.ocean.lunar_lander.Lunar_Lander import test_performance
 import time
 import numpy as np
 import mo_gymnasium as mo_gym
-env = mo_gym.make("LunarLander-v2")
+env = mo_gym.make("LunarLander-v3")
 env.reset(seed=0)
 
 steps = 0

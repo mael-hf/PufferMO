@@ -110,22 +110,26 @@ class LunarLander(pufferlib.PufferEnv):
 
 
 # ──────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    import time
 
+
+def test_performance(timeout=10, atn_cache=1024):
     N    = 64
     env  = LunarLander(num_envs=N)
     env.reset()
-    steps = 0
+    tick = 0
 
-    CACHE   = 1024
-    actions = np.random.randint(0, 4, (CACHE, N))
+    actions = np.random.randint(0, 4, (atn_cache, N))
 
+    import time
     start = time.time()
-    while time.time() - start < 10:
-        env.step(actions[steps % CACHE])
-        steps += 1
+    while time.time() - start < timeout:
+        atns = actions[tick % atn_cache]
+        env.step(atns)
+        tick += 1
 
-    sps = int(env.num_agents * steps / (time.time() - start))
-    print(f"SPS: {sps}")
+    print(f'SPS: {env.num_agents * tick / (time.time() - start):.2f}')
     env.close()
+
+
+if __name__ == "__main__":
+    test_performance()

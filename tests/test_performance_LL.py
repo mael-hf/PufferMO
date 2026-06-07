@@ -1,4 +1,4 @@
-from pufferlib.ocean.lunar_lander.Lunar_lander import test_performance
+from pufferlib.ocean.lunar_lander.Lunar_Lander import test_performance
 import time
 import numpy as np
 import mo_gymnasium as mo_gym

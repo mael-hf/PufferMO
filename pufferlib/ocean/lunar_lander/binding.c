@@ -30,29 +30,8 @@ static int my_log(PyObject* dict, Log* log) {
  * Sets manual_weights=1 so c_reset does not overwrite them.
  */
 static int my_put(Env* env, PyObject* args, PyObject* kwargs) {
-    PyObject* w_obj = NULL;
-    if (!PyArg_ParseTuple(args, "O", &w_obj)) {
-        PyErr_SetString(PyExc_ValueError, "set_weights: expected a single array argument");
-        return -1;
-    }
-
-    Py_buffer view;
-    if (PyObject_GetBuffer(w_obj, &view, PyBUF_SIMPLE | PyBUF_FORMAT) < 0)
-        return -1;
-
-    if (view.len != REWARD_DIM * (Py_ssize_t)sizeof(float)) {
-        PyErr_Format(PyExc_ValueError,
-            "set_weights: expected float32 array of length %d, got %zd bytes",
-            REWARD_DIM, view.len);
-        PyBuffer_Release(&view);
-        return -1;
-    }
-
-    float* w = (float*)view.buf;
-    for (int i = 0; i < REWARD_DIM; i++)
-        env->weights[i] = w[i];
-
+    /* Weights are already in env->weights via the shared numpy buffer.
+       Just mark them as manually set so c_reset won't re-sample. */
     env->manual_weights = 1;
-    PyBuffer_Release(&view);
     return 0;
 }

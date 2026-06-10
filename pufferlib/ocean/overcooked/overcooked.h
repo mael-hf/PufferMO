@@ -162,10 +162,9 @@ typedef struct {
 } Overcooked;
 
 // --- LAYOUTS ---
-static const char CRAMPED_ROOM[5][5] = {
+static const char CRAMPED_ROOM[4][5] = {
     {'6', '1', '2', '1', '6'},
     {'4', ' ', ' ', ' ', '4'},
-    {'1', ' ', ' ', ' ', '1'},
     {'1', ' ', ' ', ' ', '1'},
     {'6', '7', '1', '5', '6'}
 };
@@ -203,7 +202,7 @@ static const char COUNTER_CIRCUIT[5][8] = {
 };
 
 static const LayoutInfo LAYOUTS[LAYOUT_COUNT] = {
-    { "cramped_room", 5, 5, (const char*)CRAMPED_ROOM, {1, 2, 3, 2}, 2 },
+    { "cramped_room", 5, 4, (const char*)CRAMPED_ROOM, {1, 2, 3, 1}, 2 },
     { "asymmetric_advantages", 9, 5, (const char*)ASYMMETRIC_ADVANTAGES, {1, 2, 7, 2}, 2 },
     { "forced_coordination", 5, 5, (const char*)FORCED_COORDINATION, {1, 2, 3, 2}, 2 },
     { "coordination_ring", 5, 5, (const char*)COORDINATION_RING, {1, 2, 3, 2}, 2 },
@@ -558,8 +557,8 @@ static void compute_observations(Overcooked* env) {
             obs[obs_idx++] = (teammate->y - agent->y) / (float)env->height;
         } else { obs[obs_idx++] = 0.0f; obs[obs_idx++] = 0.0f; }
 
+        obs[obs_idx++] = agent->y / (float)env->height; 
         obs[obs_idx++] = agent->x / (float)env->width;
-        obs[obs_idx++] = agent->y / (float)env->height;
         obs[obs_idx++] = env->rewards[agent_idx];
     }
 }
@@ -601,6 +600,7 @@ void c_render(Overcooked* env) {
 
 // --- API PRINCIPALE (PUFFERLIB) ---
 static void init(Overcooked* env) {
+    env->observation_size = 43;
     env->tick = 0;
 
     const LayoutInfo* layout = get_layout_info(env->layout_id);
@@ -648,7 +648,6 @@ void c_reset(Overcooked* env) {
         env->terminals[i] = 0;
         set_agent_position(env, env->agents[i].x, env->agents[i].y);
     }
-    // Appel essentiel pour l'IA !
     compute_observations(env);
 }
 
@@ -730,7 +729,6 @@ void c_step(Overcooked* env) {
         env->log.episode_return += env->rewards[i];
     }
     
-    // Mise à jour de la vision de l'IA !
     compute_observations(env);
 
     if (env->tick >= env->max_ticks) {

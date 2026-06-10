@@ -20,7 +20,7 @@ from pufferlib.ocean.overcooked.overcooked import OvercookedEnv as PortEnv
 # --- Config ---
 LAYOUT    = "cramped_room"
 MAX_TICKS = 400
-N_STEPS_C   = 10_000
+N_STEPS_C   = 100_000
 N_STEPS_REF = 2_000
 
 # Mapping actions C -> référence

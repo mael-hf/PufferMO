@@ -34,3 +34,4 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
 static int my_log(PyObject* dict, Log* log) {
     return 0;
 }
+

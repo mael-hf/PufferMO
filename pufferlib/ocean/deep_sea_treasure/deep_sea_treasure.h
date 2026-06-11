@@ -18,14 +18,10 @@
 #define REWARD_TREASURE_IDX 0
 #define REWARD_TIME_IDX     1
 
-// Uniform Dirichlet prior over the 2-objective simplex
 static const double dirichlet_alpha[REWARD_DIM] = {1.0, 1.0};
 
-// Sentinel for impassable rock
 #define ROCK -10.0f
 
-// Convex DEFAULT_MAP from Yang et al. (2019). Row 0 = top, agent starts at (0,0).
-// 0.0 = open water, -10.0 = rock, positive = treasure value (terminal on entry).
 static const float MAP[GRID_ROWS][GRID_COLS] = {
     {  0.0f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
     {  0.7f,  0.0f,  0.0f,  0.0f,  0.0f,  0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f},
@@ -40,11 +36,9 @@ static const float MAP[GRID_ROWS][GRID_COLS] = {
     {-10.0f,-10.0f,-10.0f,-10.0f,-10.0f,-10.0f,-10.0f,-10.0f,-10.0f,23.7f,0.0f},
 };
 
-// Action -> (delta_row, delta_col). 0=up, 1=down, 2=left, 3=right.
 static const int DR[4] = {-1,  1,  0,  0};
 static const int DC[4] = { 0,  0, -1,  1};
 
-// Colors for the renderer
 static const Color PUFF_SUB   = (Color){255, 221,  0, 255};
 static const Color PUFF_CHEST = (Color){218, 165, 32, 255};
 static const Color PUFF_ROCK  = (Color){ 40,  40, 55, 255};
@@ -52,7 +46,7 @@ static const Color PUFF_WATER = (Color){ 20,  60, 110, 255};
 static const Color PUFF_WHITE = (Color){241, 241, 241, 255};
 static const Color PUFF_BG    = (Color){  6,  24,  24, 255};
 
-// Log struct 
+
 typedef struct Log Log;
 struct Log {
     float perf;
@@ -74,35 +68,35 @@ struct Log {
 typedef struct Client Client;
 typedef struct DeepSeaTreasure DeepSeaTreasure;
 struct DeepSeaTreasure {
-    // Required by env_binding_mo.h. Names and types must match exactly.
     unsigned char* observations;
-    int*           actions;
-    float*         rewards;
-    float*         weights;
+    int* actions;
+    float* rewards;
+    float* weights;
     unsigned char* terminals;
-    gsl_rng*       gsl_rng;
-    Log            log;
-
-    // Env-specific state
-    int   row;
-    int   col;
-    int   step_count;
-    int   last_action;
-
-    // Discounting 
+    gsl_rng* gsl_rng;
+    Log log;
+    int row;
+    int col;
+    int step_count;
+    int last_action;
     double gamma;
     double gamma_t;
-
-    // For evaluation-time weight override via my_put()
     bool manual_weights;
 
-    // Lazy raylib renderer
     Client* client;
+    float ep_return;
+    float ep_return_treasure;
+    float ep_return_time;
+    float ep_length;
+    float ep_discounted_return;
+    float ep_discounted_return_treasure;
+    float ep_discounted_return_time;
+    float ep_scalarized_return;
+    float ep_discounted_scalarized_return;
 };
 
 
 static void write_observations(DeepSeaTreasure* env) {
-    // Observation = [row, col]. Values fit in uint8 (max 10 on convex map).
     env->observations[0] = (unsigned char)env->row;
     env->observations[1] = (unsigned char)env->col;
 }
@@ -128,15 +122,13 @@ static bool is_valid_state(int row, int col) {
 }
 
 
-
-
 void c_reset(DeepSeaTreasure* env) {
-    env->row         = 0;
-    env->col         = 0;
+    env->row = 0;
+    env->col = 0;
     env->step_count  = 0;
     env->last_action = -1;
-    env->gamma_t     = env->gamma;
-    env->log         = (Log){0};
+    env->gamma_t = env->gamma;
+    env->log = (Log){0};
 
     write_observations(env);
     sample_weights(env);
@@ -180,16 +172,16 @@ void c_step(DeepSeaTreasure* env) {
     }
 
     env->rewards[REWARD_TREASURE_IDX] = r_treasure;
-    env->rewards[REWARD_TIME_IDX]     = r_time;
+    env->rewards[REWARD_TIME_IDX] = r_time;
 
     float scalarized = r_treasure * w_treasure + r_time * w_time;
-    env->log.episode_return_treasure              += r_treasure;
-    env->log.episode_return_time                  += r_time;
-    env->log.discounted_episode_return_treasure   += (float)env->gamma_t * r_treasure;
-    env->log.discounted_episode_return_time       += (float)env->gamma_t * r_time;
-    env->log.episode_return                       += r_treasure + r_time;
-    env->log.scalarized_episode_return            += scalarized;
-    env->log.discounted_episode_return            += (float)env->gamma_t * (r_treasure + r_time);
+    env->log.episode_return_treasure += r_treasure;
+    env->log.episode_return_time += r_time;
+    env->log.discounted_episode_return_treasure += (float)env->gamma_t * r_treasure;
+    env->log.discounted_episode_return_time += (float)env->gamma_t * r_time;
+    env->log.episode_return += r_treasure + r_time;
+    env->log.scalarized_episode_return += scalarized;
+    env->log.discounted_episode_return += (float)env->gamma_t * (r_treasure + r_time);
     env->log.discounted_scalarized_episode_return += (float)env->gamma_t * scalarized;
 
     // Truncate at the fixed horizon 
@@ -200,8 +192,8 @@ void c_step(DeepSeaTreasure* env) {
     if (terminal) {
         env->terminals[0] = 1;
         env->log.score = env->log.episode_return_treasure;
-        env->log.perf  = env->log.score;
-        env->log.n    += 1.0f;
+        env->log.perf = env->log.score;
+        env->log.n += 1.0f;
         write_observations(env);
         c_reset(env);
         return;
@@ -211,13 +203,13 @@ void c_step(DeepSeaTreasure* env) {
 }
 
 
-#define CELL_SIZE       40
+#define CELL_SIZE 40
 #define WINDOW_PADDING  20
 #define WINDOW_W (GRID_COLS * CELL_SIZE + 2 * WINDOW_PADDING)
 #define WINDOW_H (GRID_ROWS * CELL_SIZE + 2 * WINDOW_PADDING + 40)
 
 struct Client {
-    int placeholder;  // raylib manages the window globally
+    int placeholder; 
 };
 
 void c_render(DeepSeaTreasure* env) {

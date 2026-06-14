@@ -165,6 +165,7 @@ MAKE_FUNCTIONS = {
     'spaces': make_spaces,
     'multiagent': make_multiagent,
     'slimevolley': 'SlimeVolley',
+    'minecart': 'Minecart',
 }
 
 def env_creator(name='squared', *args, **kwargs):

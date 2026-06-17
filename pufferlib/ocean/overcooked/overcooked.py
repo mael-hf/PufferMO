@@ -1,7 +1,7 @@
 import pufferlib
 import gymnasium as gym
 import numpy as np
-from . import binding
+from pufferlib.ocean.overcooked import binding
 
 class OvercookedEnv(pufferlib.PufferEnv):
     def __init__(self, buf=None, **kwargs):

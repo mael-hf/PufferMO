@@ -535,7 +535,7 @@ void c_step(Pommerman* env) {
         Bomb* b          = &env->bombs[env->num_bombs++];
         b->row           = r;
         b->col           = c;
-        b->life          = BOMB_LIFE;
+        b->life          = BOMB_LIFE + 1;
         b->blast_strength= env->agent_blast[a];
         b->bomber_id     = a;
         b->moving        = 0;

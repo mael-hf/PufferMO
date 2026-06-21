@@ -3,10 +3,9 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-#include <gsl/gsl_rng.h>   /* FIX 1 : RNG GSL pour reproduire NumPy PCG64 */
+#include <gsl/gsl_rng.h>   
 #include "raylib.h"
 
-/* ── Couleurs PufferLib ── */
 const Color PUFF_RED        = (Color){187,   0,   0, 255};
 const Color PUFF_CYAN       = (Color){  0, 187, 187, 255};
 const Color PUFF_WHITE      = (Color){241, 241, 241, 241};
@@ -16,15 +15,6 @@ const Color PUFF_YELLOW     = (Color){187, 187,   0, 255};
 const Color PUFF_GRAY       = (Color){ 80,  80,  80, 255};
 const Color PUFF_PURPLE     = (Color){128, 102, 230, 255};
 
-/* ═══════════════════════════════════════════════════════════════════
- * Physical constants — identical to Python Gymnasium LunarLander-v3
- *
- * Action order (as in Python):
- *   0 = nothing
- *   1 = left orientation engine
- *   2 = main engine
- *   3 = right orientation engine
- * ═══════════════════════════════════════════════════════════════════ */
 #define FPS                    50
 #define DT                     (1.0f / FPS)
 
@@ -46,105 +36,70 @@ const Color PUFF_PURPLE     = (Color){128, 102, 230, 255};
 #define LEG_AWAY               (LEG_AWAY_PX / SCALE)
 #define LEG_DOWN               (LEG_DOWN_PX / SCALE)
 
-/* Gravity and initial random force */
 #define GRAVITY               -10.0f
 #define INITIAL_RANDOM       1000.0f
 
-/* Terrain */
 #define CHUNKS                 11
 #define HELIPAD_Y              (H / 4.0f)
 
-/* Observation / action spaces */
 #define OBS_DIM                 8
 #define ACT_DIM                 4
 
-/* Wind constant (same as Python: k = 0.01) */
 #define WIND_K                  0.01f
 
-/* ══════════════════════════════════════════════════════════════════
- * Multi-objective reward dimensions
- * ══════════════════════════════════════════════════════════════════ */
 #define REWARD_DIM              2
 
-/* Per-objective reward indices */
-#define REW_LANDING             0   /* shaping + landing bonus / crash penalty */
-#define REW_FUEL                1   /* fuel efficiency (negated engine usage)  */
+#define REW_LANDING             0   
+#define REW_FUEL                1  
 
-/* ══════════════════════════════════════════════════════════════════
- * Log — PufferLib required: floats only, n must be last
- * ══════════════════════════════════════════════════════════════════ */
 typedef struct {
-    float score_landing;  /* cumulative landing reward across episodes */
-    float score_fuel;     /* cumulative fuel reward across episodes     */
-    float episode_len;    /* cumulative episode length                  */
-    float n;              /* number of completed episodes — MUST BE LAST */
+    float score_landing;  
+    float score_fuel;     
+    float episode_len;    
+    float n;              
 } Log;
 
-/* ══════════════════════════════════════════════════════════════════
- * LunarLander — main environment struct
- * Required PufferLib MO fields (in this exact order):
- *   Log log, observations, actions, rewards, weights, terminals, gsl_rng
- * ══════════════════════════════════════════════════════════════════ */
 typedef struct {
-    /* ── Required PufferLib MO fields ── */
     Log            log;
-    float*         observations;   /* float[OBS_DIM]       */
-    int*           actions;        /* int[1], 0..3         */
-    float*         rewards;        /* float[REWARD_DIM]    */
-    float*         weights;        /* float[REWARD_DIM] — scalarisation weights */
-    unsigned char* terminals;      /* bool[1]              */
-    void*          gsl_rng;        /* RNG handle (MO binding) */
-    int            manual_weights; /* 1 if weights set externally */
+    float*         observations;   
+    int*           actions;       
+    float*         rewards;       
+    float*         weights;        
+    unsigned char* terminals;      
+    void*          gsl_rng;        
+    int            manual_weights; 
 
-    /* ── Lander dynamics ── */
-    float x, y;       /* centre-of-mass position [m]   */
-    float vx, vy;     /* linear velocities [m/s]       */
-    float angle;      /* angle [rad]                   */
-    float omega;      /* angular velocity [rad/s]      */
+    float x, y;       
+    float vx, vy;     
+    float angle;     
+    float omega;      
 
-    /* ── Legs ── */
     int   leg_contact[2];
 
-    /* ── Terrain ── */
-    float terrain_y[CHUNKS + 1];  /* height at each chunk vertex [m] */
-    float helipad_x1, helipad_x2; /* helipad x bounds [m]            */
-    float helipad_y;               /* helipad height [m]              */
+    float terrain_y[CHUNKS + 1];  
+    float helipad_x1, helipad_x2;
+    float helipad_y;               
 
-    /* ── Internal tracking ── */
-    float prev_shaping;   /* shaping from previous step (NaN = first step) */
+    float prev_shaping;   
     int   step_count;
     int   game_over;
 
-    /* ── Wind ── */
     int   enable_wind;
     float wind_power;
     float turbulence_power;
     float wind_idx;
     float torque_idx;
 
-    /* ── Episode accumulation ── */
     float ep_reward_landing;
     float ep_reward_fuel;
     int   ep_len;
 } LunarLander;
 
-/* ══════════════════════════════════════════════════════════════════
- * Internal utilities
- * ══════════════════════════════════════════════════════════════════
- *
- * FIX 1 : ll_randf() et ll_randrange() utilisaient rand() (libc), dont
- * la séquence est incompatible avec le NumPy PCG64 seedé par Python.
- * On utilise maintenant le gsl_rng fourni par le binding PufferLib MO,
- * qui est seedé depuis Python via vec_reset(seed).  Toutes les fonctions
- * aléatoires reçoivent env* pour accéder à env->gsl_rng.
- * ══════════════════════════════════════════════════════════════════ */
 
-/* FIX 1a — remplace ll_randf() sans contexte */
 static inline float ll_randf_env(LunarLander* env) {
     return (float)gsl_rng_uniform((gsl_rng*)env->gsl_rng);
 }
 
-/* FIX 1b — remplace ll_randrange() sans contexte */
 static inline float ll_randrange_env(LunarLander* env, float range) {
     return (ll_randf_env(env) * 2.0f - 1.0f) * range;
 }
@@ -158,11 +113,10 @@ static float ll_ground_at(const LunarLander* env, float x) {
     return env->terrain_y[idx] * (1.0f - t) + env->terrain_y[idx + 1] * t;
 }
 
-/* FIX 1c — terrain_gen passe par ll_randf_env */
 static void ll_terrain_gen(LunarLander* env) {
     float height[CHUNKS + 1];
     for (int i = 0; i <= CHUNKS; i++)
-        height[i] = ll_randf_env(env) * (H / 2.0f);   /* FIX 1 */
+        height[i] = ll_randf_env(env) * (H / 2.0f);   
 
     int mid = CHUNKS / 2;
     height[mid - 2] = HELIPAD_Y;
@@ -201,23 +155,16 @@ static void ll_fill_obs(LunarLander* env) {
     env->observations[7] = (float)env->leg_contact[1];
 }
 
-/* ══════════════════════════════════════════════════════════════════
- * Dirichlet weight sampling (if not using manual weights)
- * ══════════════════════════════════════════════════════════════════ */
-/* FIX 1d — sample_weights passe par ll_randf_env */
+
 static void ll_sample_weights(LunarLander* env) {
     if (env->manual_weights) return;
-    /* Sample from Dirichlet(1,1) = Uniform on simplex */
-    float e0 = -logf(ll_randf_env(env) + 1e-8f);   /* FIX 1 */
-    float e1 = -logf(ll_randf_env(env) + 1e-8f);   /* FIX 1 */
+    float e0 = -logf(ll_randf_env(env) + 1e-8f);  
+    float e1 = -logf(ll_randf_env(env) + 1e-8f);   
     float s  = e0 + e1;
     env->weights[REW_LANDING] = e0 / s;
     env->weights[REW_FUEL]    = e1 / s;
 }
 
-/* ══════════════════════════════════════════════════════════════════
- * ll_compute_shaping — helper partagé entre c_reset et c_step
- * ══════════════════════════════════════════════════════════════════ */
 static inline float ll_compute_shaping(LunarLander* env) {
     float s0 = env->observations[0];
     float s1 = env->observations[1];
@@ -233,9 +180,6 @@ static inline float ll_compute_shaping(LunarLander* env) {
            +  10.0f * s7;
 }
 
-/* ══════════════════════════════════════════════════════════════════
- * c_reset
- * ══════════════════════════════════════════════════════════════════ */
 void c_reset(LunarLander* env) {
     ll_terrain_gen(env);
 
@@ -261,33 +205,19 @@ void c_reset(LunarLander* env) {
         env->torque_idx = ll_randrange_env(env, 9999.0f);   /* FIX 1 */
     }
 
-    /* Sample new Dirichlet weights at episode start */
     ll_sample_weights(env);
 
     ll_fill_obs(env);
 
-    /* FIX 2 : initialiser prev_shaping depuis la position de reset,
-     * exactement comme Gymnasium le fait dans reset().
-     * Sans ce calcul, le step 0 retourne toujours rew_landing = 0
-     * au lieu du delta shaping_step0 - shaping_reset. */
     env->prev_shaping = ll_compute_shaping(env);
 }
 
-/* ══════════════════════════════════════════════════════════════════
- * c_step — MO version
- *
- * Writes each reward objective separately into rewards[]:
- *   rewards[REW_LANDING] = shaping delta + landing/crash bonus
- *   rewards[REW_FUEL]    = -fuel_cost (positive = efficient)
- * ══════════════════════════════════════════════════════════════════ */
 void c_step(LunarLander* env) {
     int action = env->actions[0];
 
-    /* Zero all reward objectives */
     for (int i = 0; i < REWARD_DIM; i++)
         env->rewards[i] = 0.0f;
 
-    /* ── 1. Wind ── */
     if (env->enable_wind && !(env->leg_contact[0] || env->leg_contact[1])) {
         float wind_mag = tanhf(
             sinf(0.02f * env->wind_idx) + sinf((float)M_PI * 0.01f * env->wind_idx)
@@ -303,7 +233,6 @@ void c_step(LunarLander* env) {
         env->omega += (torque_mag / 5.0f) * DT;
     }
 
-    /* ── 2. Engine impulses ── */
     float tip_x  =  sinf(env->angle);
     float tip_y  =  cosf(env->angle);
     float side_x = -tip_y;
@@ -333,7 +262,6 @@ void c_step(LunarLander* env) {
         atorque += direction * SIDE_ENGINE_POWER * (SIDE_ENGINE_AWAY / SCALE) / 5.0f;
     }
 
-    /* ── 3. Euler integration ── */
     env->vx    += ax              * DT;
     env->vy    += (ay + GRAVITY)  * DT;
     env->omega += atorque         * DT * 20.0f;
@@ -349,7 +277,6 @@ void c_step(LunarLander* env) {
     while (env->angle >  (float)M_PI) env->angle -= 2.0f * (float)M_PI;
     while (env->angle < -(float)M_PI) env->angle += 2.0f * (float)M_PI;
 
-    /* ── 4. Leg contact detection ── */
     float sa = sinf(env->angle), ca = cosf(env->angle);
     for (int leg = 0; leg < 2; leg++) {
         float sign = (leg == 0) ? -1.0f : 1.0f;
@@ -363,26 +290,18 @@ void c_step(LunarLander* env) {
     if (env->y <= gy_body + 0.05f)
         env->game_over = 1;
 
-    /* ── 5. Fill observations ── */
     ll_fill_obs(env);
 
-    /* ── 6. Shaping + multi-objective rewards ── */
     float shaping = ll_compute_shaping(env);
 
     float rew_landing = 0.0f;
     float rew_fuel    = 0.0f;
 
-    /* Landing reward: potential-based shaping delta
-     * FIX 2 : prev_shaping est maintenant toujours un nombre valide
-     * dès le step 0 (initialisé dans c_reset), donc le isnan guard
-     * ne masque plus la récompense du premier step. */
     rew_landing = shaping - env->prev_shaping;
     env->prev_shaping = shaping;
 
-    /* Fuel reward: negative cost (0 = no engine used = best) */
     rew_fuel = -(m_power * 0.30f + s_power * 0.03f);
 
-    /* ── Termination ── */
     env->terminals[0] = 0;
     env->step_count++;
 
@@ -400,16 +319,13 @@ void c_step(LunarLander* env) {
         rew_landing = +100.0f;
     }
 
-    /* Write objectives into rewards array */
     env->rewards[REW_LANDING] = rew_landing;
     env->rewards[REW_FUEL]    = rew_fuel;
 
-    /* Accumulate per-objective episode totals */
     env->ep_reward_landing += rew_landing;
     env->ep_reward_fuel    += rew_fuel;
     env->ep_len++;
 
-    /* Log + auto-reset at episode end */
     if (env->terminals[0]) {
         env->log.score_landing += env->ep_reward_landing;
         env->log.score_fuel    += env->ep_reward_fuel;
@@ -419,9 +335,6 @@ void c_step(LunarLander* env) {
     }
 }
 
-/* ══════════════════════════════════════════════════════════════════
- * c_render
- * ══════════════════════════════════════════════════════════════════ */
 void c_render(LunarLander* env) {
     if (!IsWindowReady()) {
         InitWindow((int)VIEWPORT_W, (int)VIEWPORT_H, "PufferLib — LunarLander MO");
@@ -434,7 +347,6 @@ void c_render(LunarLander* env) {
 
     float cw = W / (CHUNKS - 1);
 
-    /* ── Terrain ── */
     for (int i = 0; i < CHUNKS - 1; i++) {
         float x0 = i       * cw * SCALE;
         float x1 = (i + 1) * cw * SCALE;
@@ -459,7 +371,6 @@ void c_render(LunarLander* env) {
         DrawLine((int)x0, (int)y0, (int)x1, (int)y1, PUFF_WHITE);
     }
 
-    /* ── Helipad flags ── */
     float flag_xs[2] = { env->helipad_x1 * SCALE, env->helipad_x2 * SCALE };
     for (int f = 0; f < 2; f++) {
         float fx     = flag_xs[f];
@@ -475,7 +386,6 @@ void c_render(LunarLander* env) {
         );
     }
 
-    /* ── Legs ── */
     float sa = sinf(env->angle), ca = cosf(env->angle);
     int bx = (int)(env->x * SCALE);
     int by = (int)(VIEWPORT_H - env->y * SCALE);
@@ -490,7 +400,6 @@ void c_render(LunarLander* env) {
         DrawCircle(sx, sy, 3, leg_col);
     }
 
-    /* ── Lander body ── */
     float poly_local[6][2] = {
         {-14, +17}, {-17, 0}, {-17, -10}, {+17, -10}, {+17, 0}, {+14, +17}
     };
@@ -515,7 +424,6 @@ void c_render(LunarLander* env) {
         );
     }
 
-    /* ── Engine flames ── */
     float tip_x = sa;
     float tip_y = ca;
 
@@ -534,7 +442,6 @@ void c_render(LunarLander* env) {
         DrawCircle((int)fx, (int)fy, 4, PUFF_YELLOW);
     }
 
-    /* ── HUD ── */
     int hud_y = 8;
     DrawText(TextFormat("Landing rew: %.1f",  env->ep_reward_landing),   8, hud_y, 16, PUFF_WHITE); hud_y += 20;
     DrawText(TextFormat("Fuel rew   : %.1f",  env->ep_reward_fuel),      8, hud_y, 16, PUFF_CYAN);  hud_y += 20;
@@ -553,10 +460,6 @@ void c_render(LunarLander* env) {
 
     EndDrawing();
 }
-
-/* ══════════════════════════════════════════════════════════════════
- * c_close
- * ══════════════════════════════════════════════════════════════════ */
 void c_close(LunarLander* env) {
     if (IsWindowReady()) {
         CloseWindow();

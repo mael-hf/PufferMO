@@ -29,7 +29,7 @@ class LunarLander(pufferlib.PufferEnv):
         turbulence_power: float = 1.5,
         buf=None,
         seed: int = 0,
-        **kwargs,           # absorb unused config keys
+        **kwargs,          
     ):
         self.single_observation_space = gymnasium.spaces.Box(
             low=-np.inf,
@@ -39,7 +39,6 @@ class LunarLander(pufferlib.PufferEnv):
         )
         self.single_action_space = gymnasium.spaces.Discrete(4)
 
-        # Multi-objective reward space
         self.reward_dim = REWARD_DIM
         self.single_reward_space = gymnasium.spaces.Box(
             low=-np.inf,
@@ -53,7 +52,6 @@ class LunarLander(pufferlib.PufferEnv):
 
         super().__init__(buf, multiobjective_reward=True)
 
-        # Initialise one C env per agent, each with its own obs/act/rew slices
         self.c_envs = binding.vec_init(
             self.observations,
             self.actions,
@@ -68,7 +66,6 @@ class LunarLander(pufferlib.PufferEnv):
             turbulence_power=float(turbulence_power),
         )
 
-    # ------------------------------------------------------------------
     def reset(self, seed: int = 0):
         binding.vec_reset(self.c_envs, seed)
         return self.observations, []
@@ -85,7 +82,6 @@ class LunarLander(pufferlib.PufferEnv):
             info,
         )
 
-    # ------------------------------------------------------------------
     def set_weights(self, weights: np.ndarray):
         """
         Set scalarisation weights for all envs.
@@ -101,7 +97,6 @@ class LunarLander(pufferlib.PufferEnv):
         self.weights[:] = weights
         binding.vec_put(self.c_envs)
 
-    # ------------------------------------------------------------------
     def render(self):
         binding.vec_render(self.c_envs, 0)
 
@@ -109,7 +104,6 @@ class LunarLander(pufferlib.PufferEnv):
         binding.vec_close(self.c_envs)
 
 
-# ──────────────────────────────────────────────────────────────────────
 
 
 def test_performance(timeout=10, atn_cache=1024):

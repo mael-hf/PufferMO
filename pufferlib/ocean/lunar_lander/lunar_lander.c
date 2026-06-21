@@ -1,4 +1,5 @@
 #include "lunar_lander.h"
+#include <gsl/gsl_rng.h>
 
 int main(void) {
     LunarLander env = {0};
@@ -8,7 +9,9 @@ int main(void) {
     env.weights      = (float*)calloc(REWARD_DIM, sizeof(float));
     env.terminals    = (unsigned char*)calloc(1, sizeof(unsigned char));
 
-    /* Default scalarisation weights: equal preference */
+    env.gsl_rng = gsl_rng_alloc(gsl_rng_mt19937);
+    gsl_rng_set((gsl_rng*)env.gsl_rng, 0);   /* seed = 0, modifiable */
+
     env.weights[REW_LANDING] = 0.5f;
     env.weights[REW_FUEL]    = 0.5f;
     env.manual_weights       = 1;
@@ -23,21 +26,19 @@ int main(void) {
     while (!WindowShouldClose()) {
 
         if (IsKeyDown(KEY_LEFT_SHIFT)) {
-            /* Human control (Shift held) */
             if (IsKeyDown(KEY_UP)) {
-                env.actions[0] = 2;   /* main engine      */
+                env.actions[0] = 2;
             } else if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A)) {
-                env.actions[0] = 1;   /* left thruster    */
+                env.actions[0] = 1;
             } else if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D)) {
-                env.actions[0] = 3;   /* right thruster   */
+                env.actions[0] = 3;
             } else {
-                env.actions[0] = 0;   /* nothing          */
+                env.actions[0] = 0;
             }
         } else {
             env.actions[0] = rand() % ACT_DIM;
         }
 
-        /* Toggle wind with W */
         if (IsKeyPressed(KEY_W)) {
             env.enable_wind = !env.enable_wind;
         }
@@ -51,6 +52,7 @@ int main(void) {
     free(env.rewards);
     free(env.weights);
     free(env.terminals);
+    gsl_rng_free((gsl_rng*)env.gsl_rng);   
     c_close(&env);
     return 0;
 }

@@ -323,14 +323,18 @@ static LLStepResult ll_physics_step(LunarLander* env, int action) {
         atorque += direction * SIDE_ENGINE_POWER * (SIDE_ENGINE_AWAY / SCALE) / 5.0f;
     }
 
-    /* ── 3. Euler integration ── */
+    /* ── 3. Euler integration ──
+     * Pas d'amortissement multiplicatif ici : Box2D a un linearDamping/
+     * angularDamping par defaut de 0, et le code source de Gymnasium ne
+     * le configure jamais explicitement sur le corps du lander. Un
+     * `*= 0.999f` ici introduirait une decroissance geometrique de
+     * vx/vy/omega qui n'existe pas dans la reference (verifie : vx
+     * reste quasi constant chez la reference en chute libre sans
+     * moteur, alors qu'il decroissait artificiellement ici avant ce
+     * correctif). */
     env->vx    += ax              * DT;
     env->vy    += (ay + GRAVITY)  * DT;
     env->omega += atorque         * DT * 20.0f;
-
-    env->vx    *= 0.999f;
-    env->vy    *= 0.999f;
-    env->omega *= 0.997f;
 
     env->x     += env->vx    * DT;
     env->y     += env->vy    * DT;
@@ -390,7 +394,14 @@ void c_reset(LunarLander* env) {
     env->angle = 0.0f;
     env->omega = 0.0f;
 
-    float mass_approx = 5.0f;
+    /* Masse reelle du corps du lander dans la reference Box2D :
+     * densite (5.0, cf. fixtureDef du LANDER_POLY) x aire du polygone.
+     * Aire calculee par la formule du lacet sur LANDER_POLY (en pixels,
+     * /SCALE^2 pour les unites Box2D) : 867 / 900 = 0.96333...
+     * masse = 5.0 * 0.96333... = 4.81667 (PAS 5.0 -- l'ancienne valeur
+     * etait une approximation arbitraire qui faussait legerement la
+     * conversion force initiale -> vitesse). */
+    float mass_approx = 4.816667f;
     env->vx = ll_randrange(env, INITIAL_RANDOM) / (mass_approx * FPS);
     env->vy = ll_randrange(env, INITIAL_RANDOM) / (mass_approx * FPS);
 

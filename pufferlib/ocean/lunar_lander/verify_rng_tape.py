@@ -19,8 +19,9 @@ Usage :
 
 import numpy as np
 import gymnasium as gym
+from gymnasium.utils import seeding
 
-from rng_tape_recorder import RecordingGenerator
+from Lunar_Lander import RecordingGenerator, _wrap_np_random_with_recorder
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -48,11 +49,9 @@ def expected_tape_length(n_actions: int, enable_wind: bool) -> int:
 
 def check_length(seed: int, n_actions: int, enable_wind: bool) -> bool:
     env = gym.make("LunarLander-v3", enable_wind=enable_wind)
-    env.reset(seed=seed)
-    recorder = RecordingGenerator(env.unwrapped.np_random)
-    env.unwrapped.np_random = recorder
+    recorder = _wrap_np_random_with_recorder(env, seed)
+    env.reset(seed=None)   # surtout pas seed=seed ici (voir helper)
 
-    env.reset(seed=seed)
     actions = np.random.default_rng(123).integers(0, 4, size=n_actions).tolist()
 
     n_played = 0
@@ -112,10 +111,11 @@ def check_inversion_roundtrip(seed: int = 0, n_actions: int = 10) -> bool:
             return val
 
     env = gym.make("LunarLander-v3", enable_wind=True)
-    env.reset(seed=seed)
-    rec = VerboseRecorder(env.unwrapped.np_random)
-    env.unwrapped.np_random = rec
-    env.reset(seed=seed)
+    gen, np_seed = seeding.np_random(seed)
+    rec = VerboseRecorder(gen)
+    env.unwrapped._np_random = rec
+    env.unwrapped._np_random_seed = np_seed
+    env.reset(seed=None)   # surtout pas seed=seed ici (voir _wrap_np_random_with_recorder)
 
     rng = np.random.default_rng(7)
     for a in rng.integers(0, 4, size=n_actions):
@@ -145,7 +145,7 @@ def check_inversion_roundtrip(seed: int = 0, n_actions: int = 10) -> bool:
 # ─────────────────────────────────────────────────────────────────────
 
 def print_tape_preview(seed: int = 0, n_actions: int = 3, enable_wind: bool = False):
-    from rng_tape_recorder import record_reference_tape
+    from Lunar_Lander import record_reference_tape
 
     env = gym.make("LunarLander-v3", enable_wind=enable_wind)
     actions = [0] * n_actions

@@ -47,6 +47,7 @@ décale tout le reste de l'épisode.
 """
 
 import numpy as np
+from gymnasium.utils import seeding
 
 
 class RecordingGenerator:
@@ -80,11 +81,38 @@ class RecordingGenerator:
         return getattr(self._gen, name)
 
 
+def _wrap_np_random_with_recorder(env, seed: int) -> RecordingGenerator:
+    """
+    Crée un Generator NumPy fraîchement seedé avec `seed`, l'enveloppe dans
+    un RecordingGenerator, et l'installe directement sur l'env -- AVANT
+    tout tirage.
+
+    ATTENTION : n'appelez ensuite env.reset(...) qu'avec seed=None sur cet
+    env. gym.Env.reset() contient :
+
+        if seed is not None:
+            self._np_random, self._np_random_seed = seeding.np_random(seed)
+
+    Donc tout appel reset(seed=<non-None>) après celui-ci écrase
+    silencieusement le recorder par un nouveau générateur -- c'est
+    exactement le bug qui produisait une tape vide (len(tape) == 0).
+    """
+    gen, np_seed = seeding.np_random(seed)
+    recorder = RecordingGenerator(gen)
+    # Assignation directe à l'attribut privé : évite toute dépendance au
+    # comportement exact du setter de la propriété np_random selon la
+    # version de Gymnasium installée.
+    env.unwrapped._np_random = recorder
+    env.unwrapped._np_random_seed = np_seed
+    return recorder
+
+
 def record_reference_tape(env, seed: int, actions: list[int]):
     """
     Rejoue `actions` sur l'environnement Gymnasium `env` (déjà créé,
-    pas encore reset), en enregistrant la tape RNG complète, et renvoie
-    (tape, observations, rewards, terminations) pour comparaison.
+    PAS encore reseté), en enregistrant la tape RNG complète depuis le
+    tout premier tirage, et renvoie (tape, observations, rewards,
+    terminations) pour comparaison.
 
     Parameters
     ----------
@@ -99,14 +127,11 @@ def record_reference_tape(env, seed: int, actions: list[int]):
     rews  : liste des récompenses (scalaires, REW_LANDING uniquement)
     dones : liste des booléens terminated/truncated combinés
     """
-    # Premier reset pour amorcer le seeding interne de np_random...
-    env.reset(seed=seed)
-    # ...puis on enveloppe np_random et on reset à nouveau pour capturer
-    # absolument tous les tirages, terrain compris.
-    recorder = RecordingGenerator(env.unwrapped.np_random)
-    env.unwrapped.np_random = recorder
+    recorder = _wrap_np_random_with_recorder(env, seed)
 
-    obs0, _ = env.reset(seed=seed)
+    # seed=None ici, sinon Gymnasium re-seede et écrase le recorder
+    # (voir _wrap_np_random_with_recorder).
+    obs0, _ = env.reset(seed=None)
     obs   = [np.asarray(obs0, dtype=np.float64)]
     rews  = []
     dones = []
@@ -119,7 +144,9 @@ def record_reference_tape(env, seed: int, actions: list[int]):
         if term or trunc:
             # La référence ne se relance pas automatiquement comme le port C ;
             # si vous voulez poursuivre sur un nouvel épisode, ré-enveloppez
-            # np_random après ce reset (le wrapper est perdu sinon).
+            # np_random après ce reset (le wrapper est perdu sinon, car ici
+            # encore on appellerait reset(seed=None), donc en fait il N'EST
+            # PAS perdu -- mais le flux logique de l'épisode s'arrête ici).
             break
 
     tape = np.array(recorder.tape, dtype=np.float32)

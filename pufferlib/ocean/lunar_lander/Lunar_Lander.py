@@ -15,11 +15,146 @@ depuis l'environnement Gymnasium de référence — voir rng_tape_recorder.py.
 
 import gymnasium
 import numpy as np
+from gymnasium.utils import seeding
 
 import pufferlib
 from pufferlib.ocean.lunar_lander import binding
 
 REWARD_DIM = 2
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Enregistrement de la RNG de référence (pour les tests de conformité)
+# ══════════════════════════════════════════════════════════════════════
+#
+# Gymnasium tire ses nombres aléatoires via deux méthodes de
+# np.random.Generator :
+#
+#     np_random.uniform(low, high, size=...)
+#     np_random.integers(low, high, size=...)   # wind_idx / torque_idx
+#
+# Les deux sont des transformations affines d'un tirage brut u dans [0,1).
+# RecordingGenerator remonte à ce u par inversion générique :
+#
+#     u = (valeur - low) / (high - low)
+#
+# ll_randf()/ll_randrange() côté C (lunar_lander.h) utilisent exactement
+# la même transformation, donc injecter cette tape de u reproduit
+# fidèlement les valeurs réelles de la référence, sans réimplémenter
+# l'algorithme RNG de NumPy (PCG64) en C.
+#
+# Ordre des tirages consommés par la référence (vérifié dans le code
+# source de Gymnasium) :
+#
+#   reset(seed) :
+#     1.  uniform(0, H/2, size=12)              -> terrain (12 valeurs)
+#     2.  uniform(-1000, 1000)                  -> force initiale x
+#     3.  uniform(-1000, 1000)                  -> force initiale y
+#     4.  [si enable_wind] integers(-9999,9999) -> wind_idx
+#     5.  [si enable_wind] integers(-9999,9999) -> torque_idx
+#     6.  uniform(-1, 1)                        -> dispersion[0] (step(0) interne)
+#     7.  uniform(-1, 1)                        -> dispersion[1] (step(0) interne)
+#
+#   step(action), à chaque appel :
+#     1.  uniform(-1, 1) -> dispersion[0]
+#     2.  uniform(-1, 1) -> dispersion[1]
+#
+# Cet ordre doit rester strictement synchronisé avec celui consommé côté
+# C (lunar_lander.h / c_reset / c_step).
+
+
+class RecordingGenerator:
+    """
+    Enveloppe un np.random.Generator pour enregistrer, dans l'ordre,
+    la version "brute dans [0,1)" de chaque tirage effectué.
+    """
+
+    def __init__(self, gen: np.random.Generator):
+        self._gen = gen
+        self.tape: list = []
+
+    def uniform(self, low=0.0, high=1.0, size=None):
+        val = self._gen.uniform(low, high, size)
+        arr = np.atleast_1d(np.asarray(val, dtype=np.float64))
+        span = float(high) - float(low)
+        raw = (arr - float(low)) / span
+        self.tape.extend(raw.tolist())
+        return val
+
+    def integers(self, low, high=None, size=None, dtype=np.int64, endpoint=False):
+        val = self._gen.integers(low, high, size=size, dtype=dtype, endpoint=endpoint)
+        arr = np.atleast_1d(np.asarray(val, dtype=np.float64))
+        span = float(high) - float(low) + (1.0 if endpoint else 0.0)
+        raw = (arr - float(low)) / span
+        self.tape.extend(raw.tolist())
+        return val
+
+    # délègue tout le reste (bit_generator, standard_normal, etc.)
+    def __getattr__(self, name):
+        return getattr(self._gen, name)
+
+
+def _wrap_np_random_with_recorder(env, seed: int) -> RecordingGenerator:
+    """
+    Crée un Generator NumPy fraîchement seedé avec `seed`, l'enveloppe dans
+    un RecordingGenerator, et l'installe directement sur l'env -- AVANT
+    tout tirage.
+
+    ATTENTION : n'appelez ensuite env.reset(...) qu'avec seed=None sur cet
+    env. gym.Env.reset() contient :
+
+        if seed is not None:
+            self._np_random, self._np_random_seed = seeding.np_random(seed)
+
+    Donc tout appel reset(seed=<non-None>) après celui-ci écrase
+    silencieusement le recorder par un nouveau générateur (c'était le bug
+    initial : une tape toujours vide).
+    """
+    gen, np_seed = seeding.np_random(seed)
+    recorder = RecordingGenerator(gen)
+    env.unwrapped._np_random = recorder
+    env.unwrapped._np_random_seed = np_seed
+    return recorder
+
+
+def record_reference_tape(env, seed: int, actions: list):
+    """
+    Rejoue `actions` sur l'environnement Gymnasium `env` (déjà créé,
+    PAS encore reseté), en enregistrant la tape RNG complète depuis le
+    tout premier tirage, et renvoie (tape, observations, rewards,
+    terminations) pour comparaison avec le port C.
+
+    Parameters
+    ----------
+    env     : gymnasium.Env  (ex: gym.make("LunarLander-v3"))
+    seed    : int
+    actions : list[int]
+
+    Returns
+    -------
+    tape  : np.ndarray, float32, à passer à LunarLander.set_rng_tape()
+    obs   : liste des observations (y compris l'observation initiale)
+    rews  : liste des récompenses (scalaires, REW_LANDING uniquement)
+    dones : liste des booléens terminated/truncated combinés
+    """
+    recorder = _wrap_np_random_with_recorder(env, seed)
+
+    # seed=None ici, sinon Gymnasium re-seede et écrase le recorder.
+    obs0, _ = env.reset(seed=None)
+    obs   = [np.asarray(obs0, dtype=np.float64)]
+    rews  = []
+    dones = []
+
+    for a in actions:
+        o, r, term, trunc, _ = env.step(a)
+        obs.append(np.asarray(o, dtype=np.float64))
+        rews.append(float(r))
+        dones.append(bool(term or trunc))
+        if term or trunc:
+            break
+
+    tape = np.array(recorder.tape, dtype=np.float32)
+    return tape, obs, rews, dones
 
 
 class LunarLander(pufferlib.PufferEnv):

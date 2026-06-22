@@ -93,6 +93,20 @@ class RecordingGenerator:
     def __getattr__(self, name):
         return getattr(self._gen, name)
 
+    def reseed(self, seed: int):
+        """
+        Remplace le générateur interne par un nouveau, fraîchement seedé
+        avec `seed`. La tape déjà accumulée n'est PAS effacée -- les
+        tirages du nouvel épisode s'ajoutent à la suite, dans l'ordre
+        temporel réel. Permet de continuer à enregistrer après un
+        ref.reset(seed=seed) volontaire en cours de rollout (par ex.
+        pour redémarrer un épisode terminé), sans jamais appeler
+        env.reset(seed=<non-None>) directement -- ce qui écraserait le
+        wrapper (voir _wrap_np_random_with_recorder).
+        """
+        gen, _ = seeding.np_random(seed)
+        self._gen = gen
+
 
 def _wrap_np_random_with_recorder(env, seed: int) -> RecordingGenerator:
     """
@@ -130,12 +144,20 @@ def record_reference_tape(env, seed: int, actions: list):
     seed    : int
     actions : list[int]
 
+    Si un épisode se termine avant la fin de `actions`, l'épisode est
+    automatiquement redémarré avec la même graine (comme le ferait un
+    `ref.reset(seed=seed)` classique dans une boucle de test), et
+    l'enregistrement continue dans la même tape -- utile pour les
+    séquences d'actions qui couvrent plusieurs épisodes (ex: rollouts
+    longs, séquences "out of bounds").
+
     Returns
     -------
     tape  : np.ndarray, float32, à passer à LunarLander.set_rng_tape()
     obs   : liste des observations (y compris l'observation initiale)
     rews  : liste des récompenses (scalaires, REW_LANDING uniquement)
-    dones : liste des booléens terminated/truncated combinés
+    dones : liste des booléens terminated/truncated combinés (un True
+            indique un redémarrage automatique juste après)
     """
     recorder = _wrap_np_random_with_recorder(env, seed)
 
@@ -151,7 +173,11 @@ def record_reference_tape(env, seed: int, actions: list):
         rews.append(float(r))
         dones.append(bool(term or trunc))
         if term or trunc:
-            break
+            # Redémarre l'épisode avec la même graine, comme le ferait
+            # un appel ref.reset(seed=seed) -- mais sans jamais passer
+            # par env.reset(seed=<non-None>), qui écraserait le wrapper.
+            recorder.reseed(seed)
+            env.reset(seed=None)
 
     tape = np.array(recorder.tape, dtype=np.float32)
     return tape, obs, rews, dones
@@ -231,14 +257,21 @@ class LunarLander(pufferlib.PufferEnv):
 
         Parameters
         ----------
-        weights : np.ndarray, shape (REWARD_DIM,) or (num_envs, REWARD_DIM)
-            Preference vector(s). Should sum to 1 per env (not enforced here).
+        weights : np.ndarray, shape (REWARD_DIM,)
+            Preference vector. Should sum to 1 (not enforced here).
+            Appliqué identiquement à tous les envs du vecteur (vec_put
+            transmet le même kwarg à chaque env -- voir binding.c).
         """
-        weights = np.asarray(weights, dtype=np.float32)
-        if weights.ndim == 1:
-            weights = np.broadcast_to(weights, (self.num_agents, REWARD_DIM)).copy()
-        self.weights[:] = weights
-        binding.vec_put(self.c_envs, weights)
+        weights = np.ascontiguousarray(weights, dtype=np.float32).reshape(-1)
+        if weights.shape[0] != REWARD_DIM:
+            raise ValueError(
+                f"set_weights: expected {REWARD_DIM} values, got {weights.shape[0]}"
+            )
+        self.weights[:] = np.broadcast_to(weights, (self.num_agents, REWARD_DIM))
+        # vec_put n'accepte qu'1 argument positionnel (self.c_envs) -- les
+        # données passent en kwarg nommé, jamais en positionnel (voir
+        # env_binding_mo.h: my_put reçoit toujours un args vide).
+        binding.vec_put(self.c_envs, weights=weights)
 
     def set_rng_tape(self, tape: np.ndarray):
         """
@@ -249,16 +282,16 @@ class LunarLander(pufferlib.PufferEnv):
         Une fois la tape épuisée, l'env C affiche un avertissement sur
         stderr et retombe sur une valeur neutre (0.5) — signe qu'il y a
         eu une désynchronisation entre le nombre de tirages attendus et
-        ceux réellement consommés (cf. rng_tape_recorder.py).
+        ceux réellement consommés (cf. record_reference_tape()).
 
         ATTENTION : ce mécanisme est pensé pour num_envs=1 (le cas
-        d'usage de test_conformity_LL.py). Avec num_envs>1, la tape
-        n'est appliquée qu'à un seul environnement sous-jacent — ne
-        pas l'utiliser pour de l'entraînement multi-env.
+        d'usage de test_conformity_LL.py). Avec num_envs>1, vec_put
+        transmet la MÊME tape à tous les envs du vecteur (voir
+        binding.c) -- ne pas l'utiliser pour de l'entraînement multi-env.
 
         Parameters
         ----------
-        tape : np.ndarray, dtype float32, longueur quelconque > REWARD_DIM
+        tape : np.ndarray, dtype float32, longueur quelconque
             Séquence de tirages bruts dans [0,1), dans l'ordre exact de
             consommation côté C (terrain, force initiale, wind/torque_idx
             si activé, puis 2 valeurs de dispersion par reset/step).
@@ -266,7 +299,7 @@ class LunarLander(pufferlib.PufferEnv):
         tape = np.ascontiguousarray(tape, dtype=np.float32)
         if tape.ndim != 1:
             raise ValueError("set_rng_tape: expected a 1-D array")
-        binding.vec_put(self.c_envs, tape)
+        binding.vec_put(self.c_envs, rng_tape=tape)
 
     # ------------------------------------------------------------------
     def render(self):

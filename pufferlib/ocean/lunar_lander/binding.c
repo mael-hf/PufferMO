@@ -29,52 +29,72 @@ static int my_log(PyObject* dict, Log* log) {
 }
 
 /*
- * ── my_put: validate and copy an array sent from Python ──
+ * ── my_put: reçoit les données via les kwargs de vec_put ──
  *
- * Appelé par vec_put (Python: env.set_weights(...) ou env.set_rng_tape(...)).
- * Reçoit un tableau numpy float32 de longueur variable. La longueur du
- * buffer détermine son interprétation :
+ * IMPORTANT : la fonction générique vec_put() (env_binding_mo.h) ne
+ * transmet JAMAIS l'array via les arguments positionnels -- elle
+ * n'accepte qu'1 argument positionnel (le handle c_envs) et appelle
+ * ensuite my_put(env, empty_args, kwargs) avec un `args` TOUJOURS VIDE
+ * pour chaque env du vecteur. Toute donnée doit donc passer par des
+ * arguments nommés (kwargs), jamais par args.
  *
- *   - longueur == REWARD_DIM (2)  -> poids de scalarisation (comportement
- *                                     original, set_weights)
- *   - longueur >  REWARD_DIM      -> tape de tirages RNG bruts dans [0,1),
- *                                     enregistrée depuis la référence
- *                                     Gymnasium (set_rng_tape, voir
- *                                     rng_tape_recorder.py)
+ * Côté Python (Lunar_Lander.py) :
+ *   binding.vec_put(self.c_envs, weights=weights_array)
+ *   binding.vec_put(self.c_envs, rng_tape=tape_array)
  *
- * On réutilise volontairement le hook déjà câblé par env_binding_mo.h
- * (vec_put) plutôt que d'en créer un nouveau, dont la signature côté
- * binding générique n'est pas visible depuis ce fichier.
+ * Note : vec_put boucle sur tous les envs du vecteur et leur transmet
+ * le MÊME dict kwargs à chacun -- donc le même tableau est appliqué à
+ * tous les envs. Pour set_rng_tape(), c'est volontaire et documenté
+ * (pensé pour num_envs=1, cf. Lunar_Lander.py).
  */
 static int my_put(Env* env, PyObject* args, PyObject* kwargs) {
-    PyObject* obj = NULL;
-    if (!PyArg_ParseTuple(args, "O", &obj)) {
-        PyErr_SetString(PyExc_ValueError, "expected a single array argument");
+    if (kwargs == NULL) {
+        PyErr_SetString(PyExc_ValueError,
+            "put: expected a 'weights' or 'rng_tape' keyword argument");
         return -1;
     }
 
-    Py_buffer view;
-    if (PyObject_GetBuffer(obj, &view, PyBUF_SIMPLE | PyBUF_FORMAT) < 0)
-        return -1;
+    int handled = 0;
 
-    Py_ssize_t n_floats = view.len / (Py_ssize_t)sizeof(float);
+    /* ── chemin 'weights' : poids de scalarisation ── */
+    PyObject* w_obj = PyDict_GetItemString(kwargs, "weights");
+    if (w_obj != NULL) {
+        Py_buffer view;
+        if (PyObject_GetBuffer(w_obj, &view, PyBUF_SIMPLE | PyBUF_FORMAT) < 0)
+            return -1;
 
-    if (n_floats == REWARD_DIM) {
-        /* ── chemin existant : poids de scalarisation ── */
+        if (view.len != REWARD_DIM * (Py_ssize_t)sizeof(float)) {
+            PyErr_Format(PyExc_ValueError,
+                "weights: expected float32 array of length %d, got %zd bytes",
+                REWARD_DIM, view.len);
+            PyBuffer_Release(&view);
+            return -1;
+        }
         float* w = (float*)view.buf;
         for (int i = 0; i < REWARD_DIM; i++)
             env->weights[i] = w[i];
         env->manual_weights = 1;
 
-    } else if (n_floats > REWARD_DIM) {
-        /* ── nouveau chemin : tape RNG injectée ── */
+        PyBuffer_Release(&view);
+        handled = 1;
+    }
+
+    /* ── chemin 'rng_tape' : tape RNG injectée ── */
+    PyObject* tape_obj = PyDict_GetItemString(kwargs, "rng_tape");
+    if (tape_obj != NULL) {
+        Py_buffer view;
+        if (PyObject_GetBuffer(tape_obj, &view, PyBUF_SIMPLE | PyBUF_FORMAT) < 0)
+            return -1;
+
+        Py_ssize_t n_floats = view.len / (Py_ssize_t)sizeof(float);
+
         if (env->injected_rng) {
             free(env->injected_rng);
             env->injected_rng = NULL;
         }
         env->injected_rng = (float*)malloc((size_t)n_floats * sizeof(float));
         if (!env->injected_rng) {
-            PyErr_SetString(PyExc_MemoryError, "set_rng_tape: allocation failed");
+            PyErr_SetString(PyExc_MemoryError, "rng_tape: allocation failed");
             PyBuffer_Release(&view);
             return -1;
         }
@@ -83,14 +103,15 @@ static int my_put(Env* env, PyObject* args, PyObject* kwargs) {
         env->injected_idx     = 0;
         env->use_injected_rng = 1;
 
-    } else {
-        PyErr_Format(PyExc_ValueError,
-            "put: expected float32 array of length >= %d, got %zd floats",
-            REWARD_DIM, n_floats);
         PyBuffer_Release(&view);
+        handled = 1;
+    }
+
+    if (!handled) {
+        PyErr_SetString(PyExc_ValueError,
+            "put: expected a 'weights' or 'rng_tape' keyword argument");
         return -1;
     }
 
-    PyBuffer_Release(&view);
     return 0;
 }

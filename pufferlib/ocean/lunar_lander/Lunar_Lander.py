@@ -7,6 +7,10 @@ Two reward objectives:
 
 Weights are sampled from Dirichlet(1,1) at each episode reset unless
 set_weights() has been called with a manual preference vector.
+
+Pour les tests de conformité (test_conformity_LL.py), set_rng_tape()
+permet d'injecter une tape de tirages aléatoires bruts enregistrée
+depuis l'environnement Gymnasium de référence — voir rng_tape_recorder.py.
 """
 
 import gymnasium
@@ -29,7 +33,7 @@ class LunarLander(pufferlib.PufferEnv):
         turbulence_power: float = 1.5,
         buf=None,
         seed: int = 0,
-        **kwargs,          
+        **kwargs,           # absorb unused config keys
     ):
         self.single_observation_space = gymnasium.spaces.Box(
             low=-np.inf,
@@ -39,6 +43,7 @@ class LunarLander(pufferlib.PufferEnv):
         )
         self.single_action_space = gymnasium.spaces.Discrete(4)
 
+        # Multi-objective reward space
         self.reward_dim = REWARD_DIM
         self.single_reward_space = gymnasium.spaces.Box(
             low=-np.inf,
@@ -52,6 +57,7 @@ class LunarLander(pufferlib.PufferEnv):
 
         super().__init__(buf, multiobjective_reward=True)
 
+        # Initialise one C env per agent, each with its own obs/act/rew slices
         self.c_envs = binding.vec_init(
             self.observations,
             self.actions,
@@ -66,6 +72,7 @@ class LunarLander(pufferlib.PufferEnv):
             turbulence_power=float(turbulence_power),
         )
 
+    # ------------------------------------------------------------------
     def reset(self, seed: int = 0):
         binding.vec_reset(self.c_envs, seed)
         return self.observations, []
@@ -82,6 +89,7 @@ class LunarLander(pufferlib.PufferEnv):
             info,
         )
 
+    # ------------------------------------------------------------------
     def set_weights(self, weights: np.ndarray):
         """
         Set scalarisation weights for all envs.
@@ -95,8 +103,37 @@ class LunarLander(pufferlib.PufferEnv):
         if weights.ndim == 1:
             weights = np.broadcast_to(weights, (self.num_agents, REWARD_DIM)).copy()
         self.weights[:] = weights
-        binding.vec_put(self.c_envs)
+        binding.vec_put(self.c_envs, weights)
 
+    def set_rng_tape(self, tape: np.ndarray):
+        """
+        Injecte une tape de tirages aléatoires bruts (valeurs dans [0,1)),
+        enregistrée depuis l'environnement Gymnasium de référence, pour
+        les tests de conformité.
+
+        Une fois la tape épuisée, l'env C affiche un avertissement sur
+        stderr et retombe sur une valeur neutre (0.5) — signe qu'il y a
+        eu une désynchronisation entre le nombre de tirages attendus et
+        ceux réellement consommés (cf. rng_tape_recorder.py).
+
+        ATTENTION : ce mécanisme est pensé pour num_envs=1 (le cas
+        d'usage de test_conformity_LL.py). Avec num_envs>1, la tape
+        n'est appliquée qu'à un seul environnement sous-jacent — ne
+        pas l'utiliser pour de l'entraînement multi-env.
+
+        Parameters
+        ----------
+        tape : np.ndarray, dtype float32, longueur quelconque > REWARD_DIM
+            Séquence de tirages bruts dans [0,1), dans l'ordre exact de
+            consommation côté C (terrain, force initiale, wind/torque_idx
+            si activé, puis 2 valeurs de dispersion par reset/step).
+        """
+        tape = np.ascontiguousarray(tape, dtype=np.float32)
+        if tape.ndim != 1:
+            raise ValueError("set_rng_tape: expected a 1-D array")
+        binding.vec_put(self.c_envs, tape)
+
+    # ------------------------------------------------------------------
     def render(self):
         binding.vec_render(self.c_envs, 0)
 
@@ -104,6 +141,7 @@ class LunarLander(pufferlib.PufferEnv):
         binding.vec_close(self.c_envs)
 
 
+# ──────────────────────────────────────────────────────────────────────
 
 
 def test_performance(timeout=10, atn_cache=1024):

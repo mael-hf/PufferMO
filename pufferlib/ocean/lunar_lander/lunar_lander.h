@@ -242,76 +242,32 @@ static void ll_sample_weights(LunarLander* env) {
 }
 
 /* ══════════════════════════════════════════════════════════════════
- * c_reset
- * ══════════════════════════════════════════════════════════════════ */
-void c_reset(LunarLander* env) {
-    ll_terrain_gen(env);
-
-    env->x     = W / 2.0f;
-    env->y     = H;
-    env->angle = 0.0f;
-    env->omega = 0.0f;
-
-    float mass_approx = 5.0f;
-    env->vx = ll_randrange(env, INITIAL_RANDOM) / (mass_approx * FPS);
-    env->vy = ll_randrange(env, INITIAL_RANDOM) / (mass_approx * FPS);
-
-    env->leg_contact[0]    = 0;
-    env->leg_contact[1]    = 0;
-    env->game_over         = 0;
-    env->step_count        = 0;
-    env->ep_reward_landing = 0.0f;
-    env->ep_reward_fuel    = 0.0f;
-    env->ep_len            = 0;
-    env->prev_shaping      = NAN;
-
-    if (env->enable_wind) {
-        /* Gymnasium tire ces deux valeurs via np_random.integers(-9999, 9999),
-         * pas via uniform(). On reutilise ll_randrange (meme formule
-         * generique d'inversion cote Python), puis on tronque a l'entier
-         * le plus proche pour rester coherent avec un tirage entier. */
-        env->wind_idx   = (float)(int)ll_randrange(env, 9999.0f);
-        env->torque_idx = (float)(int)ll_randrange(env, 9999.0f);
-    }
-
-    /* Sample new Dirichlet weights at episode start */
-    ll_sample_weights(env);
-
-    /* ── Alignement avec reset() de Gymnasium ──────────────────────
-     * reset() de la reference Gymnasium execute en interne un step(0)
-     * complet avant de renvoyer l'observation. Ce step(0) consomme
-     * 2 tirages de dispersion (utilises pour les impulsions moteur,
-     * meme si l'action 0 ne tire aucun moteur). On les consomme ici
-     * pour garder l'index de la tape synchronise avec la reference.
-     *
-     * LIMITATION CONNUE : ce step(0) n'est pas encore integre comme
-     * un vrai pas de physique ici (pas de calcul de shaping initial,
-     * pas de re-resolution Box2D de la force initiale). L'observation
-     * initiale peut donc differer legerement de la reference meme
-     * avec une tape RNG parfaitement synchronisee. A traiter dans une
-     * iteration ulterieure si la precision des premiers pas est
-     * critique pour vos tests. */
-    if (env->use_injected_rng) {
-        ll_randrange(env, 1.0f / SCALE);
-        ll_randrange(env, 1.0f / SCALE);
-    }
-
-    ll_fill_obs(env);
-}
-
-/* ══════════════════════════════════════════════════════════════════
- * c_step — MO version
+ * ll_physics_step — un pas de physique complet, factorise
  *
- * Writes each reward objective separately into rewards[]:
- *   rewards[REW_LANDING] = shaping delta + landing/crash bonus
- *   rewards[REW_FUEL]    = -fuel_cost (positive = efficient)
+ * Regroupe ce que Gymnasium fait a CHAQUE appel a step(), reward et
+ * terminaison mis a part : vent, impulsions moteur, integration
+ * d'Euler, detection de contact des jambes, remplissage des
+ * observations, et mise a jour du shaping/prev_shaping.
+ *
+ * Reutilise par :
+ *   - c_step()  : le vrai pas de l'agent (action = env->actions[0])
+ *   - c_reset() : le pas interne action=0 que Gymnasium execute a
+ *                 l'interieur de reset() (return self.step(0)[0], {})
+ *                 -- sans cette factorisation, l'observation initiale
+ *                 du port ne correspondait JAMAIS a celle de la
+ *                 reference (decalage systematique d'un pas complet :
+ *                 angle/omega notamment restaient figes a 0 dans
+ *                 l'observation initiale, alors que la reference y
+ *                 a deja integre un pas de gravite + impulsions).
  * ══════════════════════════════════════════════════════════════════ */
-void c_step(LunarLander* env) {
-    int action = env->actions[0];
+typedef struct {
+    float m_power;
+    float s_power;
+    float rew_landing_raw;  /* shaping delta, AVANT tout bonus/malus terminal */
+} LLStepResult;
 
-    /* Zero all reward objectives */
-    for (int i = 0; i < REWARD_DIM; i++)
-        env->rewards[i] = 0.0f;
+static LLStepResult ll_physics_step(LunarLander* env, int action) {
+    LLStepResult result = {0.0f, 0.0f, 0.0f};
 
     /* ── 1. Wind ── */
     if (env->enable_wind && !(env->leg_contact[0] || env->leg_contact[1])) {
@@ -343,10 +299,9 @@ void c_step(LunarLander* env) {
     float disp1 = ll_randrange(env, 1.0f / SCALE);
 
     float ax = 0.0f, ay = 0.0f, atorque = 0.0f;
-    float m_power = 0.0f, s_power = 0.0f;
 
     if (action == 2) {
-        m_power = 1.0f;
+        result.m_power = 1.0f;
         float ox = tip_x  * (MAIN_ENGINE_Y_LOCATION / SCALE + 2.0f * disp0) + side_x * disp1;
         float oy = -tip_y * (MAIN_ENGINE_Y_LOCATION / SCALE + 2.0f * disp0) - side_y * disp1;
         ax += -ox * MAIN_ENGINE_POWER / 5.0f;
@@ -354,7 +309,7 @@ void c_step(LunarLander* env) {
     }
 
     if (action == 1 || action == 3) {
-        s_power = 1.0f;
+        result.s_power = 1.0f;
         float direction = (action == 1) ? -1.0f : 1.0f;
         float ox = tip_x  * disp0 + side_x * (3.0f * disp1 + direction * SIDE_ENGINE_AWAY / SCALE);
         float oy = -tip_y * disp0 - side_y * (3.0f * disp1 + direction * SIDE_ENGINE_AWAY / SCALE);
@@ -396,6 +351,7 @@ void c_step(LunarLander* env) {
     /* ── 5. Fill observations ── */
     ll_fill_obs(env);
 
+    /* ── 6. Shaping / prev_shaping ── */
     float s0 = env->observations[0];
     float s1 = env->observations[1];
     float s2 = env->observations[2];
@@ -411,23 +367,89 @@ void c_step(LunarLander* env) {
         +  10.0f * s6
         +  10.0f * s7;
 
-    /* ── 6. Multi-objective rewards ── */
-    float rew_landing = 0.0f;
-    float rew_fuel    = 0.0f;
-
-    /* Landing reward: potential-based shaping */
     if (!isnan(env->prev_shaping))
-        rew_landing = shaping - env->prev_shaping;
+        result.rew_landing_raw = shaping - env->prev_shaping;
     env->prev_shaping = shaping;
 
-    /* Fuel reward: negative cost (0 = no engine used = best) */
-    rew_fuel = -(m_power * 0.30f + s_power * 0.03f);
+    return result;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * c_reset
+ * ══════════════════════════════════════════════════════════════════ */
+void c_reset(LunarLander* env) {
+    ll_terrain_gen(env);
+
+    env->x     = W / 2.0f;
+    env->y     = H;
+    env->angle = 0.0f;
+    env->omega = 0.0f;
+
+    float mass_approx = 5.0f;
+    env->vx = ll_randrange(env, INITIAL_RANDOM) / (mass_approx * FPS);
+    env->vy = ll_randrange(env, INITIAL_RANDOM) / (mass_approx * FPS);
+
+    env->leg_contact[0]    = 0;
+    env->leg_contact[1]    = 0;
+    env->game_over         = 0;
+    env->step_count        = 0;
+    env->ep_reward_landing = 0.0f;
+    env->ep_reward_fuel    = 0.0f;
+    env->ep_len            = 0;
+    env->prev_shaping      = NAN;
+
+    if (env->enable_wind) {
+        /* Gymnasium tire ces deux valeurs via np_random.integers(-9999, 9999),
+         * pas via uniform(). On reutilise ll_randrange (meme formule
+         * generique d'inversion cote Python), puis on tronque a l'entier
+         * le plus proche pour rester coherent avec un tirage entier. */
+        env->wind_idx   = (float)(int)ll_randrange(env, 9999.0f);
+        env->torque_idx = (float)(int)ll_randrange(env, 9999.0f);
+    }
+
+    /* Sample new Dirichlet weights at episode start */
+    ll_sample_weights(env);
+
+    /* ── Step interne (action=0), comme reset() de Gymnasium ────────
+     * Gymnasium fait `return self.step(0)[0], {}` a la fin de son
+     * reset() : un pas de physique COMPLET (gravite, integration,
+     * contact des jambes, calcul du shaping initial) est execute
+     * avant de renvoyer l'observation. On reproduit ce pas ici avec
+     * action=0, sans toucher aux compteurs de reward/episode (qui
+     * n'existent pas encore a ce stade) ni a la terminaison (la
+     * reference ignore aussi le terminated/reward de ce pas interne,
+     * elle ne garde que l'observation).
+     *
+     * Avant ce fix, l'observation initiale du port restait figee aux
+     * conditions brutes (angle=0, omega=0, x=W/2 exactement) alors
+     * que la reference y avait deja integre un pas de chute -- d'ou
+     * un decalage systematique d'un pas sur toute la trajectoire. */
+    ll_physics_step(env, 0);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * c_step — MO version
+ *
+ * Writes each reward objective separately into rewards[]:
+ *   rewards[REW_LANDING] = shaping delta + landing/crash bonus
+ *   rewards[REW_FUEL]    = -fuel_cost (positive = efficient)
+ * ══════════════════════════════════════════════════════════════════ */
+void c_step(LunarLander* env) {
+    int action = env->actions[0];
+
+    /* Zero all reward objectives */
+    for (int i = 0; i < REWARD_DIM; i++)
+        env->rewards[i] = 0.0f;
+
+    LLStepResult result = ll_physics_step(env, action);
+    float rew_landing = result.rew_landing_raw;
+    float rew_fuel     = -(result.m_power * 0.30f + result.s_power * 0.03f);
 
     /* ── Termination ── */
     env->terminals[0] = 0;
     env->step_count++;
 
-    int out_x  = (fabsf(s0) >= 1.0f);
+    int out_x  = (fabsf(env->observations[0]) >= 1.0f);
     int awake  = !(env->leg_contact[0] && env->leg_contact[1]
                    && fabsf(env->vx) < 0.1f && fabsf(env->vy) < 0.1f
                    && fabsf(env->omega) < 0.1f);

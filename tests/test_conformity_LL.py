@@ -7,6 +7,17 @@ Compares the PufferLib C implementation step-by-step against the
 reference Gymnasium LunarLander-v3 on a set of deterministic action
 sequences and random rollouts.
 
+RNG INJECTION
+-------------
+Pour éliminer le bruit dû aux générateurs aléatoires différents entre
+Python (NumPy PCG64) et le port C (libc rand()), compare_sequence()
+enregistre la tape RNG réellement consommée par la référence Gymnasium
+(via record_reference_tape, cf. Lunar_Lander.py) puis l'injecte dans le
+port avant de le rejouer. Les deux environnements voient ainsi le même
+terrain, la même force initiale, le même bruit moteur -- toute
+divergence résiduelle reflète donc un véritable écart de physique
+entre le port et la référence, pas un artefact RNG.
+
 Reward objectives (REWARD_DIM = 2):
     0  REW_LANDING  — shaping delta + landing/crash bonus
     1  REW_FUEL     — negative fuel cost
@@ -32,6 +43,7 @@ import numpy as np
 import gymnasium as gym
 
 from pufferlib.ocean.lunar_lander.Lunar_Lander import LunarLander, record_reference_tape
+import pufferlib.ocean.lunar_lander.binding as binding
 
 # Absolute tolerance for reward comparison
 # (float32 vs float64 arithmetic can introduce small differences)
@@ -66,48 +78,6 @@ def make_port(seed: int = 0, enable_wind: bool = False,
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Single-step wrappers — normalise both APIs to (obs, reward_vec, ended)
-# ─────────────────────────────────────────────────────────────────────
-
-def reference_step(env, action: int):
-    """
-    Step the Gymnasium reference env.
-
-    Returns
-    -------
-    obs      : np.ndarray, float64, shape (8,)
-    reward   : float64   — scalar landing reward only (Gymnasium is SO)
-    ended    : bool
-    """
-    obs, reward, terminated, truncated, _ = env.step(action)
-    ended = bool(terminated or truncated)
-    return (
-        np.asarray(obs, dtype=np.float64),
-        float(reward),
-        ended,
-    )
-
-
-def port_step(env, action: int):
-    """
-    Step the PufferLib port (num_envs=1).
-
-    Returns
-    -------
-    obs         : np.ndarray, float64, shape (8,)
-    reward_vec  : np.ndarray, float64, shape (2,)  [landing, fuel]
-    ended       : bool
-    """
-    import pufferlib.ocean.lunar_lander.binding as binding
-    env.actions[:] = np.array([action], dtype=env.actions.dtype)
-    binding.vec_step(env.c_envs)
-    obs        = env.observations[0].astype(np.float64).copy()
-    reward_vec = env.rewards[0].astype(np.float64).copy()   # shape (2,)
-    ended      = bool(env.terminals[0])
-    return obs, reward_vec, ended
-
-
-# ─────────────────────────────────────────────────────────────────────
 # Core comparison engine
 # ─────────────────────────────────────────────────────────────────────
 
@@ -128,38 +98,66 @@ def compare_sequence(actions: list, label: str,
 
     Notes
     -----
-    * The reference Gymnasium env returns a *scalar* landing reward.
-      We therefore compare only rewards[REW_LANDING] from the port.
-    * Observations after a terminal step may differ (the port
-      auto-resets); we skip that comparison when both agree on ended=True.
+    * On enregistre D'ABORD toute la séquence sur la référence (via
+      record_reference_tape), ce qui capture en une seule passe :
+        - la tape RNG brute consommée (terrain, force initiale,
+          dispersion moteur, wind/torque_idx si activé) ;
+        - les observations/récompenses/terminaisons réelles à chaque
+          step, y compris à travers d'éventuels redémarrages d'épisode
+          (record_reference_tape relance automatiquement avec la même
+          graine si l'épisode se termine avant la fin de la séquence).
+    * On injecte ensuite cette même tape dans le port avant de le
+      rejouer -- les deux environnements consomment alors exactement
+      les mêmes tirages aléatoires.
+    * Le port auto-reset en interne dès qu'un épisode se termine ; à ce
+      step précis, port.observations reflète déjà la NOUVELLE episode
+      (c_reset écrase observations après avoir écrit la récompense
+      terminale) -- on saute donc la comparaison d'observation
+      uniquement quand les DEUX environnements terminent au même step
+      (comportement identique à l'ancienne version de ce test).
+    * La référence Gymnasium retourne une récompense *scalaire*
+      (landing). On compare donc uniquement rewards[REW_LANDING] côté
+      port.
     """
-    ref  = make_reference(seed=seed)
+    ref = make_reference(seed=seed)
+
+    # 1. Enregistrer la tape réelle + obs/rewards/dones de la référence
+    #    sur cette séquence précise (gère les redémarrages automatiques).
+    tape, ref_obs, ref_rews, ref_dones = record_reference_tape(ref, seed, actions)
+    ref.close()
+
+    # 2. Créer le port, fixer les poids (isole REW_LANDING), injecter
+    #    la même tape, puis reset.
     port = make_port(seed=seed)
-
-    # ── fix scalarisation weights so random sampling doesn't interfere ──
     port.set_weights(np.array([1.0, 0.0], dtype=np.float32))
-
-    # ── initial observation check ──
-    ref_obs0, _ = ref.reset(seed=seed)
+    port.set_rng_tape(tape)
     port.reset(seed=seed)
 
-    ref_obs0  = np.asarray(ref_obs0, dtype=np.float64)
-    port_obs0 = port.observations[0].astype(np.float64)
-
     mismatches = []
+
+    # ── comparaison de l'observation initiale ──
+    ref_obs0  = np.asarray(ref_obs[0], dtype=np.float64)
+    port_obs0 = port.observations[0].astype(np.float64)
 
     if check_obs and not np.allclose(ref_obs0, port_obs0, atol=ATOL):
         mismatches.append((-1, "init_obs", ref_obs0.tolist(), port_obs0.tolist()))
 
-    # ── step loop ──
+    # ── boucle de step ──
     for t, a in enumerate(actions):
-        r_obs, r_rew_scalar, r_end = reference_step(ref, a)
-        p_obs, p_rew_vec,    p_end = port_step(port, a)
+        port.actions[:] = np.array([a], dtype=port.actions.dtype)
+        binding.vec_step(port.c_envs)
 
+        p_obs        = port.observations[0].astype(np.float64).copy()
+        p_rew_vec    = port.rewards[0].astype(np.float64).copy()
+        p_end        = bool(port.terminals[0])
         p_rew_landing = p_rew_vec[0]   # REW_LANDING
         p_rew_fuel    = p_rew_vec[1]   # REW_FUEL
 
-        # Observation comparison (skip post-terminal since envs auto-reset)
+        r_obs        = np.asarray(ref_obs[t + 1], dtype=np.float64)
+        r_rew_scalar = ref_rews[t]
+        r_end        = ref_dones[t]
+
+        # Observation comparison (skip post-terminal since both envs auto-reset)
         both_ended = r_end and p_end
         if check_obs and not both_ended:
             if not np.allclose(r_obs, p_obs, atol=ATOL):
@@ -179,13 +177,6 @@ def compare_sequence(actions: list, label: str,
         if r_end != p_end:
             mismatches.append((t, "ended", r_end, p_end))
 
-        # Reset reference if episode ended (port auto-resets)
-        if r_end:
-            ref.reset(seed=seed)
-        if p_end:
-            port.reset(seed=seed)
-
-    ref.close()
     port.close()
 
     if mismatches:
@@ -289,12 +280,13 @@ def test_fuel_reward_no_action():
     """
     Test 9 — verify fuel reward is exactly 0.0 when action=0.
     With no engine firing: rew_fuel = -(0*0.30 + 0*0.03) = 0.
+
+    Test purement côté port (pas de comparaison à la référence) --
+    n'a pas besoin d'injection RNG.
     """
     port = make_port(seed=7)
     port.set_weights(np.array([0.0, 1.0], dtype=np.float32))
     port.reset(seed=7)
-
-    import pufferlib.ocean.lunar_lander.binding as binding
 
     failures = []
     for t in range(100):
@@ -324,13 +316,13 @@ def test_set_weights_respected():
     re-sampling at episode reset.
     After calling set_weights([0.8, 0.2]), the weights must remain
     unchanged across multiple episode boundaries.
+
+    Test purement côté port -- n'a pas besoin d'injection RNG.
     """
     port = make_port(seed=99)
     target = np.array([0.8, 0.2], dtype=np.float32)
     port.set_weights(target)
     port.reset(seed=99)
-
-    import pufferlib.ocean.lunar_lander.binding as binding
 
     failures = []
     for t in range(500):
@@ -359,10 +351,10 @@ def test_observation_bounds():
     Test 11 — run 2 000 random steps and verify the observation
     vector is always finite (no NaN / Inf).
     This catches integration blow-ups.
+
+    Test purement côté port -- n'a pas besoin d'injection RNG.
     """
     port = make_port(seed=13)
-
-    import pufferlib.ocean.lunar_lander.binding as binding
 
     rng = np.random.default_rng(13)
     actions = rng.integers(0, 4, size=2000).tolist()
@@ -395,6 +387,8 @@ def test_wind_mode_no_crash():
     Verifies the wind path does not cause NaN/Inf or assertion errors.
     (Exact numerical match with reference not expected — wind uses
     continuous sinusoidal indices that diverge from Gymnasium's numpy RNG.)
+
+    Test purement côté port -- n'a pas besoin d'injection RNG.
     """
     port = LunarLander(
         num_envs=1,
@@ -404,8 +398,6 @@ def test_wind_mode_no_crash():
     )
     port.set_weights(np.array([0.5, 0.5], dtype=np.float32))
     port.reset(seed=0)
-
-    import pufferlib.ocean.lunar_lander.binding as binding
 
     rng = np.random.default_rng(0)
     actions = rng.integers(0, 4, size=1000).tolist()

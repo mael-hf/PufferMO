@@ -144,6 +144,7 @@ typedef struct {
     int    injected_len;     /* longueur du buffer                         */
     int    injected_idx;     /* prochain index a consommer                 */
     int    use_injected_rng; /* 0 = comportement normal (rand())           */
+    int    rng_exhaust_warned; /* evite de spammer le meme avertissement   */
 } LunarLander;
 
 /* ══════════════════════════════════════════════════════════════════
@@ -158,10 +159,14 @@ typedef struct {
 static inline float ll_raw01(LunarLander* env) {
     if (env->use_injected_rng) {
         if (env->injected_idx >= env->injected_len) {
-            fprintf(stderr,
-                "[lunar_lander] ATTENTION: tape RNG epuisee (idx=%d, len=%d) "
-                "-- desynchronisation probable avec la reference Gymnasium.\n",
-                env->injected_idx, env->injected_len);
+            if (!env->rng_exhaust_warned) {
+                fprintf(stderr,
+                    "[lunar_lander] ATTENTION: tape RNG epuisee (idx=%d, len=%d) "
+                    "-- desynchronisation probable avec la reference Gymnasium "
+                    "(ce message ne s'affiche qu'une fois par tape).\n",
+                    env->injected_idx, env->injected_len);
+                env->rng_exhaust_warned = 1;
+            }
             return 0.5f; /* valeur neutre plutot que de planter */
         }
         return env->injected_rng[env->injected_idx++];

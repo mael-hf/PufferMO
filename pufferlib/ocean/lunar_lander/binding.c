@@ -17,6 +17,7 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     env->injected_len     = 0;
     env->injected_idx     = 0;
     env->use_injected_rng = 0;
+    env->rng_exhaust_warned = 0;
     return 0;
 }
 
@@ -102,6 +103,7 @@ static int my_put(Env* env, PyObject* args, PyObject* kwargs) {
         env->injected_len     = (int)n_floats;
         env->injected_idx     = 0;
         env->use_injected_rng = 1;
+        env->rng_exhaust_warned = 0;
 
         PyBuffer_Release(&view);
         handled = 1;

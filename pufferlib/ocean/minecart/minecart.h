@@ -4,7 +4,6 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
-#include "raylib.h"
 #include <gsl/gsl_rng.h>
 #include <gsl/gsl_randist.h>
 
@@ -144,30 +143,26 @@ static void step_cart(Minecart* env) {
     float y = env->pos_y;
 
     if (y != 0.0f && y != 1.0f && (y_vel > EPS_SPEED || y_vel < -EPS_SPEED)) {
-        if (x >= 1.0f && x_vel > 0.0f)
+        if (x == 1.0f && x_vel > 0.0f)
             env->angle += copysignf(ROTATION, y_vel);
-        if (x <= 0.0f && x_vel < 0.0f)
+        if (x == 0.0f && x_vel < 0.0f)
             env->angle -= copysignf(ROTATION, y_vel);
     }
     if (x != 0.0f && x != 1.0f && (x_vel > EPS_SPEED || x_vel < -EPS_SPEED)) {
-        if (y >= 1.0f && y_vel > 0.0f)
+        if (y == 1.0f && y_vel > 0.0f)
             env->angle -= copysignf(ROTATION, x_vel);
-        if (y <= 0.0f && y_vel < 0.0f)
+        if (y == 0.0f && y_vel < 0.0f)
             env->angle += copysignf(ROTATION, x_vel);
     }
-
-    env->angle = fmodf(env->angle, 360.0f);
-    if (env->angle < 0.0f) env->angle += 360.0f;
-
-    angle_rad = env->angle * M_PI / 180.0f;
-    x_vel = env->speed * cosf(angle_rad);
-    y_vel = env->speed * sinf(angle_rad);
 
     float new_x = clampf(x + x_vel, 0.0f, 1.0f);
     float new_y = clampf(y + y_vel, 0.0f, 1.0f);
     env->speed = mag2d(new_x - x, new_y - y);
     env->pos_x = new_x;
     env->pos_y = new_y;
+
+    env->angle = fmodf(env->angle, 360.0f);
+    if (env->angle < 0.0f) env->angle += 360.0f;
 }
 
 static void perform_mine(Minecart* env) {
@@ -277,11 +272,11 @@ void c_step(Minecart* env) {
                 perform_mine(env);
         }
 
+        if (env->done) break;
+
         int inner = env->incremental_frame_skip ? 1 : env->frame_skip;
         for (int m = 0; m < inner; m++)
             step_cart(env);
-
-        if (env->done) break;
 
         float dist = mag2d(env->pos_x, env->pos_y);
         if (dist < BASE_RADIUS) {
@@ -343,68 +338,14 @@ void c_step(Minecart* env) {
     }
 }
 
-#define CELL_SIZE 480
-#define HOME_RADIUS 50
-
 struct Client {
     int placeholder;
 };
 
 void c_render(Minecart* env) {
-    if (IsKeyDown(KEY_ESCAPE)) exit(0);
-    if (!IsWindowReady()) {
-        InitWindow(CELL_SIZE, CELL_SIZE, "PufferLib Minecart");
-        SetTargetFPS(10);
-    }
-
-    BeginDrawing();
-    ClearBackground((Color){6, 24, 24, 255});
-
-    int margin = (int)(MARGIN * CELL_SIZE);
-    int play_w = CELL_SIZE - 2 * margin;
-    int play_h = CELL_SIZE - 2 * margin;
-
-    for (int r = 0; r < 10; r++) {
-        for (int c = 0; c < 10; c++) {
-            Color bg = ((r + c) % 2 == 0)
-                ? (Color){40, 60, 40, 255}
-                : (Color){50, 75, 50, 255};
-            DrawRectangle(margin + c * play_w / 10, margin + r * play_h / 10,
-                          play_w / 10 + 1, play_h / 10 + 1, bg);
-        }
-    }
-
-    DrawCircle(HOME_X * play_w + margin, HOME_Y * play_h + margin,
-               HOME_RADIUS, RED);
-
-    for (int i = 0; i < env->mine_cnt; i++) {
-        int mx = (int)(env->mines[i].x * play_w + margin);
-        int my = (int)(env->mines[i].y * play_h + margin);
-        DrawCircle(mx, my, 20, GOLD);
-        DrawCircle(mx - 4, my - 4, 8, (Color){255, 215, 0, 255});
-        DrawCircle(mx + 4, my + 4, 8, (Color){220, 180, 0, 255});
-    }
-
-    int cx = (int)(env->pos_x * play_w + margin);
-    int cy = (int)(env->pos_y * play_h + margin);
-    float angle_rad = env->angle * M_PI / 180.0f;
-    Vector2 tip = {(float)(cx + 15 * cosf(angle_rad)), (float)(cy + 15 * sinf(angle_rad))};
-    Vector2 left = {(float)(cx + 10 * cosf(angle_rad + 2.5f)), (float)(cy + 10 * sinf(angle_rad + 2.5f))};
-    Vector2 right = {(float)(cx + 10 * cosf(angle_rad - 2.5f)), (float)(cy + 10 * sinf(angle_rad - 2.5f))};
-    DrawTriangle(tip, left, right, SKYBLUE);
-
-    char info[128];
-    snprintf(info, sizeof(info), "Speed: %.2f  Ore: %.1f/%.1f  %.1f/%.1f",
-             env->speed, env->content[0], env->capacity, env->content[1], env->capacity);
-    DrawText(info, 10, CELL_SIZE - 30, 20, WHITE);
-
-    EndDrawing();
 }
 
 void c_close(Minecart* env) {
-    if (IsWindowReady()) {
-        CloseWindow();
-    }
     if (env->mines) {
         free(env->mines);
         env->mines = NULL;

@@ -332,4 +332,4 @@ def test_performance(timeout=10, atn_cache=1024):
 
 
 if __name__ == "__main__":
-    test_performance()
+    test_performance()  

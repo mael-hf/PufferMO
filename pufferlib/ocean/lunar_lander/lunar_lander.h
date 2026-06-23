@@ -362,8 +362,8 @@ static LLStepResult ll_physics_step(LunarLander* env, int action) {
     float sa = sinf(env->angle), ca = cosf(env->angle);
     for (int leg = 0; leg < 2; leg++) {
         float sign = (leg == 0) ? -1.0f : 1.0f;
-        float lx = env->x + sign * LEG_AWAY * ca - LEG_DOWN * sa;
-        float ly = env->y + sign * LEG_AWAY * sa + LEG_DOWN * ca;
+        float lx = env->x + sign * LEG_AWAY * ca + LEG_DOWN * sa;
+        float ly = env->y + sign * LEG_AWAY * sa - LEG_DOWN * ca;
         float gy = ll_ground_at(env, lx);
         env->leg_contact[leg] = (ly <= gy + 0.05f) ? 1 : 0;
     }

@@ -566,8 +566,8 @@ void c_render(LunarLander* env) {
     int by = (int)(VIEWPORT_H - env->y * SCALE);
     for (int leg = 0; leg < 2; leg++) {
         float sign = (leg == 0) ? -1.0f : 1.0f;
-        float lx = env->x + sign * LEG_AWAY * ca - LEG_DOWN * sa;
-        float ly = env->y + sign * LEG_AWAY * sa + LEG_DOWN * ca;
+        float lx = env->x + sign * LEG_AWAY * ca + LEG_DOWN * sa;
+        float ly = env->y + sign * LEG_AWAY * sa - LEG_DOWN * ca;
         int sx = (int)(lx * SCALE);
         int sy = (int)(VIEWPORT_H - ly * SCALE);
         Color leg_col = env->leg_contact[leg] ? PUFF_GREEN : PUFF_PURPLE;

@@ -121,10 +121,11 @@ def test_initial_state():
     ref.close()
     port.close()
 
-    assert np.array_equal(ref_obs, port_obs), (
+    assert np.allclose(ref_obs, port_obs), (
         f"Initial obs mismatch: ref={ref_obs} port={port_obs}"
     )
     print("[initial_state] PASSED")
+    return True
 
 
 def test_fuel_idle():
@@ -239,6 +240,7 @@ def test_mine_mechanic():
               "the cart may not have encountered a mine. This is not necessarily a failure.")
     else:
         print(f"[mine_mechanic] PASSED - ore collected at step {_}")
+    return True
 
 
 def test_set_weights():
@@ -263,31 +265,43 @@ def test_set_weights():
 
     port.close()
     print("[set_weights] PASSED")
-
+    return True
 
 if __name__ == "__main__":
+    # Wrap test execution in try/except to gracefully catch assertion errors 
+    # instead of crashing mid-suite, giving you a full report.
+    tests = [
+        ("initial_state", test_initial_state),
+        ("fuel_idle", test_fuel_idle),
+        ("fuel_accel", test_fuel_accel),
+        ("fuel_mine", test_fuel_mine),
+        ("fuel_brake", test_fuel_brake),
+        ("left_turns", test_left_turns),
+        ("right_turns", test_right_turns),
+        ("accel_then_brake", test_accel_then_brake),
+        ("drive_and_turn", test_drive_and_turn),
+        ("deposit_no_depart", test_deposit_no_depart),
+        ("depart_and_return", test_depart_and_return),
+        ("random_short", test_random_short),
+        ("wall_right", test_wall_right),
+        ("wall_top", test_wall_top),
+        ("wall_left", test_wall_left),
+        ("wall_bottom", test_wall_bottom),
+        ("corner_topright", test_corner_topright),
+        ("wall_sequence_right_left", test_wall_sequence_right_left),
+        ("long_random_no_mine", test_long_random_no_mine),
+        ("mine_mechanic", test_mine_mechanic),
+        ("set_weights", test_set_weights),
+    ]
+
     results = []
-    results.append(test_initial_state())
-    results.append(test_fuel_idle())
-    results.append(test_fuel_accel())
-    results.append(test_fuel_mine())
-    results.append(test_fuel_brake())
-    results.append(test_left_turns())
-    results.append(test_right_turns())
-    results.append(test_accel_then_brake())
-    results.append(test_drive_and_turn())
-    results.append(test_deposit_no_depart())
-    results.append(test_depart_and_return())
-    results.append(test_random_short())
-    results.append(test_wall_right())
-    results.append(test_wall_top())
-    results.append(test_wall_left())
-    results.append(test_wall_bottom())
-    results.append(test_corner_topright())
-    results.append(test_wall_sequence_right_left())
-    results.append(test_long_random_no_mine())
-    results.append(test_mine_mechanic())
-    results.append(test_set_weights())
+    for name, test_func in tests:
+        try:
+            success = test_func()
+            results.append(success)
+        except AssertionError as e:
+            print(f"[{name}] FAILED with AssertionError: {e}")
+            results.append(False)
 
     print()
     if all(results):

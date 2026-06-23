@@ -15,7 +15,7 @@ from pufferlib.ocean.minecart import binding
 class Minecart(pufferlib.PufferEnv):
     def __init__(
         self,
-        num_envs=16,
+        num_envs=1,
         frame_skip=4,
         incremental_frame_skip=True,
         capacity=1.0,

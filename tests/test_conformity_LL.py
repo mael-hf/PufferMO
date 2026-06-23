@@ -18,6 +18,15 @@ terrain, la même force initiale, le même bruit moteur -- toute
 divergence résiduelle reflète donc un véritable écart de physique
 entre le port et la référence, pas un artefact RNG.
 
+ÉCARTS (NOUVEAU)
+-----------------
+En plus du PASS/FAIL basé sur ATOL, compare_sequence() suit maintenant
+l'écart absolu réel à CHAQUE step (pas seulement ceux qui dépassent la
+tolérance) pour chaque observation et pour le reward. Un résumé
+(max / moyenne) est imprimé à la fin de chaque test, qu'il passe ou
+échoue -- utile pour juger si l'écart restant est négligeable (bruit
+float32) ou révèle un vrai biais de modèle.
+
 Reward objectives (REWARD_DIM = 2):
     0  REW_LANDING  — shaping delta + landing/crash bonus
     1  REW_FUEL     — negative fuel cost
@@ -76,6 +85,7 @@ MAX_STEPS = 1000
 # que ce gap d'architecture connu ne pollue chaque test.
 ANGLE_IDX, OMEGA_IDX = 4, 5
 OBS_IDX_STRICT = [0, 1, 2, 3, 6, 7]  # tous sauf angle/omega
+OBS_LABELS_STRICT = ["x", "y", "vx", "vy", "leg_L", "leg_R"]
 
 
 def shaping_no_angle(obs: np.ndarray) -> float:
@@ -114,13 +124,59 @@ def make_port(seed: int = 0, enable_wind: bool = False,
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Helper d'impression des écarts
+# ─────────────────────────────────────────────────────────────────────
+
+def _print_gap_summary(label: str, obs_diffs: list, rew_diffs: list,
+                        n_steps_obs: int, n_steps_rew: int) -> None:
+    """
+    Affiche un résumé des écarts absolus réels port-vs-référence,
+    indépendamment du PASS/FAIL basé sur ATOL.
+
+    Parameters
+    ----------
+    obs_diffs : list of np.ndarray, shape (len(OBS_IDX_STRICT),)
+        Écart absolu par dimension d'observation, un élément par step
+        effectivement comparé.
+    rew_diffs : list of float
+        Écart absolu du reward (landing, ou landing_no_angle selon le
+        step), un élément par step effectivement comparé.
+    """
+    print(f"  [{label}] écarts (ATOL={ATOL}) :")
+
+    if obs_diffs:
+        arr = np.stack(obs_diffs, axis=0)  # shape (n_steps_obs, n_dims)
+        max_per_dim  = arr.max(axis=0)
+        mean_per_dim = arr.mean(axis=0)
+        overall_max  = arr.max()
+        overall_mean = arr.mean()
+        detail = "  ".join(
+            f"{name}: max={mx:.6f} moy={mn:.6f}"
+            for name, mx, mn in zip(OBS_LABELS_STRICT, max_per_dim, mean_per_dim)
+        )
+        print(f"    obs   ({n_steps_obs:4d} steps comparés) -> {detail}")
+        print(f"    obs   global -> max={overall_max:.6f}  moyenne={overall_mean:.6f}")
+    else:
+        print(f"    obs   ({n_steps_obs:4d} steps comparés) -> aucune comparaison effectuée")
+
+    if rew_diffs:
+        rarr = np.asarray(rew_diffs, dtype=np.float64)
+        print(f"    reward({n_steps_rew:4d} steps comparés) -> "
+              f"max={rarr.max():.6f}  moyenne={rarr.mean():.6f}  "
+              f"mediane={np.median(rarr):.6f}")
+    else:
+        print(f"    reward({n_steps_rew:4d} steps comparés) -> aucune comparaison effectuée")
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Core comparison engine
 # ─────────────────────────────────────────────────────────────────────
 
 def compare_sequence(actions: list, label: str,
                      seed: int = 0,
                      check_obs: bool = True,
-                     check_fuel_sign: bool = True) -> bool:
+                     check_fuel_sign: bool = True,
+                     print_gaps: bool = True) -> bool:
     """
     Replay *actions* on both environments and collect mismatches.
 
@@ -131,6 +187,9 @@ def compare_sequence(actions: list, label: str,
     seed             : reset seed for both envs
     check_obs        : compare observations at every step
     check_fuel_sign  : verify REW_FUEL <= 0 at every step
+    print_gaps       : si True, affiche un résumé des écarts réels
+                       (max/moyenne) à la fin du test, qu'il PASS ou
+                       FAIL -- voir _print_gap_summary().
 
     Notes
     -----
@@ -171,9 +230,16 @@ def compare_sequence(actions: list, label: str,
 
     mismatches = []
 
+    # ── suivi des écarts réels (indépendant de ATOL) ──
+    obs_diffs = []   # liste de vecteurs |ref - port| sur OBS_IDX_STRICT
+    rew_diffs = []   # liste de |ref - port| pour le reward comparé
+
     # ── comparaison de l'observation initiale (hors angle/omega) ──
     ref_obs0  = np.asarray(ref_obs[0], dtype=np.float64)
     port_obs0 = port.observations[0].astype(np.float64)
+
+    init_diff = np.abs(ref_obs0[OBS_IDX_STRICT] - port_obs0[OBS_IDX_STRICT])
+    obs_diffs.append(init_diff)
 
     if check_obs and not np.allclose(
         ref_obs0[OBS_IDX_STRICT], port_obs0[OBS_IDX_STRICT], atol=ATOL
@@ -208,6 +274,8 @@ def compare_sequence(actions: list, label: str,
         # exclut angle/omega -- voir LIMITATION CONNUE plus haut)
         both_ended = r_end and p_end
         if check_obs and not both_ended:
+            step_obs_diff = np.abs(r_obs[OBS_IDX_STRICT] - p_obs[OBS_IDX_STRICT])
+            obs_diffs.append(step_obs_diff)
             if not np.allclose(
                 r_obs[OBS_IDX_STRICT], p_obs[OBS_IDX_STRICT], atol=ATOL
             ):
@@ -227,6 +295,7 @@ def compare_sequence(actions: list, label: str,
         shaping_port_na = shaping_no_angle(p_obs)
 
         if r_end or p_end:
+            rew_diffs.append(abs(r_rew_scalar - p_rew_landing))
             if not np.isclose(r_rew_scalar, p_rew_landing, atol=ATOL):
                 mismatches.append((t, "rew_landing",
                                    round(r_rew_scalar, 6),
@@ -236,6 +305,7 @@ def compare_sequence(actions: list, label: str,
         else:
             r_rew_na = shaping_ref_na - prev_shaping_ref_na
             p_rew_na = shaping_port_na - prev_shaping_port_na
+            rew_diffs.append(abs(r_rew_na - p_rew_na))
             if not np.isclose(r_rew_na, p_rew_na, atol=ATOL):
                 mismatches.append((t, "rew_landing_no_angle",
                                    round(r_rew_na, 6),
@@ -261,10 +331,18 @@ def compare_sequence(actions: list, label: str,
         print(f"[{label}] FAILED — {len(mismatches)} mismatch(es):")
         for t, kind, rv, pv in mismatches[:20]:
             print(f"    step {t:4d}  {kind:20s}  ref={rv}  port={pv}")
-        return False
+        passed = False
+    else:
+        print(f"[{label}] PASSED ({len(actions)} steps)")
+        passed = True
 
-    print(f"[{label}] PASSED ({len(actions)} steps)")
-    return True
+    if print_gaps:
+        _print_gap_summary(
+            label, obs_diffs, rew_diffs,
+            n_steps_obs=len(obs_diffs), n_steps_rew=len(rew_diffs),
+        )
+
+    return passed
 
 
 # ─────────────────────────────────────────────────────────────────────

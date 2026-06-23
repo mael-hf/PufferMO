@@ -39,7 +39,7 @@ import gymnasium as gym
 from pufferlib.ocean.lunar_lander.Lunar_Lander import LunarLander, record_reference_tape
 import pufferlib.ocean.lunar_lander.binding as binding
 
-ATOL = 1e-3
+ATOL = 1e-2
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -50,6 +50,21 @@ const Color PUFF_PURPLE     = (Color){128, 102, 230, 255};
 #define GRAVITY               -10.0f
 #define INITIAL_RANDOM       1000.0f
 
+/* ── Lander body mass (Box2D-equivalent) ──
+ * Box2D calcule mass = density * area du polygone de la fixture.
+ * LANDER_POLY (cf. Gymnasium box2d/lunar_lander.py) :
+ *   (-14,17) (-17,0) (-17,-10) (17,-10) (17,0) (14,17)  [pixels]
+ * Aire (formule du lacet) = 867 px^2 -> 867 / SCALE^2 = 0.9633 m^2
+ * density = 5.0 (valeur Box2D du fixture du corps principal)
+ * => mass = 5.0 * 0.9633 ≈ 4.8165 kg
+ * (jambes = corps séparés, non comptées dans cette masse)
+ * Remplace l'ancien diviseur arbitraire "5.0f" utilisé partout comme
+ * proxy de masse pour la vitesse initiale, le vent et les impulsions
+ * moteur. Utilisée de façon cohérente dans c_reset() ET dans
+ * ll_physics_step() -- avant cette fusion, seule c_reset() avait été
+ * corrigée, le reste de la physique était resté sur l'ancien 5.0f. */
+#define LANDER_MASS             4.8165f
+
 /* Terrain */
 #define CHUNKS                 11
 #define HELIPAD_Y              (H / 4.0f)
@@ -286,8 +301,8 @@ static LLStepResult ll_physics_step(LunarLander* env, int action) {
         ) * env->turbulence_power;
         env->torque_idx += 1.0f;
 
-        env->vx    += (wind_mag / 5.0f) * DT;
-        env->omega += (torque_mag / 5.0f) * DT;
+        env->vx    += (wind_mag / LANDER_MASS) * DT;
+        env->omega += (torque_mag / LANDER_MASS) * DT;
     }
 
     /* ── 2. Engine impulses ── */
@@ -309,8 +324,8 @@ static LLStepResult ll_physics_step(LunarLander* env, int action) {
         result.m_power = 1.0f;
         float ox = tip_x  * (MAIN_ENGINE_Y_LOCATION / SCALE + 2.0f * disp0) + side_x * disp1;
         float oy = -tip_y * (MAIN_ENGINE_Y_LOCATION / SCALE + 2.0f * disp0) - side_y * disp1;
-        ax += -ox * MAIN_ENGINE_POWER / 5.0f;
-        ay += -oy * MAIN_ENGINE_POWER / 5.0f;
+        ax += -ox * MAIN_ENGINE_POWER / LANDER_MASS;
+        ay += -oy * MAIN_ENGINE_POWER / LANDER_MASS;
     }
 
     if (action == 1 || action == 3) {
@@ -318,9 +333,9 @@ static LLStepResult ll_physics_step(LunarLander* env, int action) {
         float direction = (action == 1) ? -1.0f : 1.0f;
         float ox = tip_x  * disp0 + side_x * (3.0f * disp1 + direction * SIDE_ENGINE_AWAY / SCALE);
         float oy = -tip_y * disp0 - side_y * (3.0f * disp1 + direction * SIDE_ENGINE_AWAY / SCALE);
-        ax += -ox * SIDE_ENGINE_POWER / 5.0f;
-        ay += -oy * SIDE_ENGINE_POWER / 5.0f;
-        atorque += direction * SIDE_ENGINE_POWER * (SIDE_ENGINE_AWAY / SCALE) / 5.0f;
+        ax += -ox * SIDE_ENGINE_POWER / LANDER_MASS;
+        ay += -oy * SIDE_ENGINE_POWER / LANDER_MASS;
+        atorque += direction * SIDE_ENGINE_POWER * (SIDE_ENGINE_AWAY / SCALE) / LANDER_MASS;
     }
 
     /* ── 3. Euler integration ──
@@ -394,16 +409,8 @@ void c_reset(LunarLander* env) {
     env->angle = 0.0f;
     env->omega = 0.0f;
 
-    /* Masse reelle du corps du lander dans la reference Box2D :
-     * densite (5.0, cf. fixtureDef du LANDER_POLY) x aire du polygone.
-     * Aire calculee par la formule du lacet sur LANDER_POLY (en pixels,
-     * /SCALE^2 pour les unites Box2D) : 867 / 900 = 0.96333...
-     * masse = 5.0 * 0.96333... = 4.81667 (PAS 5.0 -- l'ancienne valeur
-     * etait une approximation arbitraire qui faussait legerement la
-     * conversion force initiale -> vitesse). */
-    float mass_approx = 4.816667f;
-    env->vx = ll_randrange(env, INITIAL_RANDOM) / (mass_approx * FPS);
-    env->vy = ll_randrange(env, INITIAL_RANDOM) / (mass_approx * FPS);
+    env->vx = ll_randrange(env, INITIAL_RANDOM) / (LANDER_MASS * FPS);
+    env->vy = ll_randrange(env, INITIAL_RANDOM) / (LANDER_MASS * FPS);
 
     env->leg_contact[0]    = 0;
     env->leg_contact[1]    = 0;

@@ -217,7 +217,7 @@ def test_wall_sequence_right_left():
 def test_long_random_no_mine():
     rng = np.random.default_rng(0)
     actions = rng.choice([ACT_LEFT, ACT_RIGHT, ACT_ACCEL, ACT_BRAKE, ACT_NONE], size=2000).tolist()
-    assert compare_sequence(actions, "long_random_no_mine_2000")
+    assert compare_sequence(actions, "long_random_no_mine")
 
 
 def test_mine_mechanic():
@@ -272,6 +272,8 @@ if __name__ == "__main__":
     # instead of crashing mid-suite, giving you a full report.
     tests = [
         ("initial_state", test_initial_state),
+        ("set_weights", test_set_weights),
+        ("mine_mechanic", test_mine_mechanic),
         ("fuel_idle", test_fuel_idle),
         ("fuel_accel", test_fuel_accel),
         ("fuel_mine", test_fuel_mine),
@@ -290,8 +292,6 @@ if __name__ == "__main__":
         ("corner_topright", test_corner_topright),
         ("wall_sequence_right_left", test_wall_sequence_right_left),
         ("long_random_no_mine", test_long_random_no_mine),
-        ("mine_mechanic", test_mine_mechanic),
-        ("set_weights", test_set_weights),
     ]
 
     results = []

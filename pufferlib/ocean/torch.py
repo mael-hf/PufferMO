@@ -1126,3 +1126,45 @@ class DeepSeaTreasure(nn.Module):
         elif self.q_value_critic:
             value = value.view(-1, self.num_atns)
         return action, value
+      
+class OvercookedLSTM(pufferlib.models.LSTMWrapper):
+    def __init__(self, env, policy, input_size=128, hidden_size=128):
+        super().__init__(env, policy, input_size, hidden_size)
+
+class OvercookedPolicy(nn.Module):
+    def __init__(self, env, hidden_size=128, **kwargs):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.is_continuous = False
+
+        # Encodeur (S'adapte automatiquement à la nouvelle taille de 43)
+        self.encoder = nn.Sequential(
+            pufferlib.pytorch.layer_init(nn.Linear(env.single_observation_space.shape[0], hidden_size)),
+            nn.ReLU(),
+            pufferlib.pytorch.layer_init(nn.Linear(hidden_size, hidden_size)),
+            nn.ReLU()
+        )
+        
+        # Têtes de sortie (Actor-Critic, s'adapte aux 6 actions)
+        self.actor = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, env.single_action_space.n), std=0.01)
+        self.value_fn = pufferlib.pytorch.layer_init(
+            nn.Linear(hidden_size, 1), std=1)
+
+    def forward(self, observations, state=None):
+        hidden = self.encode_observations(observations)
+        actions, value = self.decode_actions(hidden)
+        return actions, value
+
+    def forward_train(self, x, state=None):
+        return self.forward(x, state)
+
+    def encode_observations(self, observations, state=None):
+        batch_size = observations.shape[0]
+        observations = observations.view(batch_size, -1).float()
+        return self.encoder(observations)
+
+    def decode_actions(self, flat_hidden):
+        action = self.actor(flat_hidden)
+        value = self.value_fn(flat_hidden)
+        return action, value

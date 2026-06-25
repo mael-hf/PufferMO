@@ -162,6 +162,7 @@ MAKE_FUNCTIONS = {
     'onestateworld': 'World',
     'onlyfish': 'OnlyFish',
     'chain_mdp': 'Chain',
+    'overcooked': 'OvercookedEnv',
     'spaces': make_spaces,
     'multiagent': make_multiagent,
     'slimevolley': 'SlimeVolley',

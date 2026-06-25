@@ -166,6 +166,7 @@ MAKE_FUNCTIONS = {
     'spaces': make_spaces,
     'multiagent': make_multiagent,
     'slimevolley': 'SlimeVolley',
+    'minecart': 'Minecart',
     'resource_gathering': 'ResourceGathering',
     'deep_sea_treasure': 'DeepSeaTreasure',
 }

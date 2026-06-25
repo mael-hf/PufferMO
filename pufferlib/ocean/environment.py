@@ -162,10 +162,13 @@ MAKE_FUNCTIONS = {
     'onestateworld': 'World',
     'onlyfish': 'OnlyFish',
     'chain_mdp': 'Chain',
+    'overcooked': 'OvercookedEnv',
     'spaces': make_spaces,
     'multiagent': make_multiagent,
     'slimevolley': 'SlimeVolley',
     'minecart': 'Minecart',
+    'resource_gathering': 'ResourceGathering',
+    'deep_sea_treasure': 'DeepSeaTreasure',
 }
 
 def env_creator(name='squared', *args, **kwargs):
